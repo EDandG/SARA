@@ -40,10 +40,12 @@ async function renderWardHistory() {
   const scoped = requestedWardId && myWards.some(w => w.id === requestedWardId);
   const wardsInView = scoped ? myWards.filter(w => w.id === requestedWardId) : myWards;
   const wardIds = wardsInView.map(w => w.id);
-  const titleText = scoped ? `Order history \u2014 ${esc(wardsInView[0].name)}` : `All orders \u2014 ${esc(myWards.map(w => w.name).join(', '))}`;
+  const historyDays = parseFloat(systemSettings.order_history_days) || 7;
+  const titleText = scoped ? `Order history \u2014 ${esc(wardsInView[0].name)} (last ${historyDays} day${historyDays > 1 ? 's' : ''})` : `All orders \u2014 ${esc(myWards.map(w => w.name).join(', '))} (last ${historyDays} day${historyDays > 1 ? 's' : ''})`;
 
+  const since = new Date(Date.now() - historyDays * 24 * 3600 * 1000).toISOString();
   const { data: sessionsData, error } = await sb.from('order_sessions').select('*').in('ward_id', wardIds)
-    .order('created_at', { ascending: false }).limit(50);
+    .gte('created_at', since).order('created_at', { ascending: false }).limit(50);
   if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
   const backLink = scoped ? `<a href="order.html?ward=${encodeURIComponent(requestedWardId)}" class="btn ghost small" style="margin-bottom:10px; display:inline-block;">\u2039 Back to ward</a><br/>` : '';
   if (!sessionsData?.length) { body.innerHTML = `<div class="card">${backLink}<h2>${titleText}</h2><div class="empty">No orders yet.</div></div>`; return; }

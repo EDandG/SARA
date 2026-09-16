@@ -111,12 +111,14 @@ async function isWardOverdueForTopup(wardId) {
   return !onTime;
 }
 
-function openTempStockModal() {
+async function openTempStockModal() {
+  const { data: catalogRows } = await sb.from('drug_catalog').select('medicine_name, pack_size').order('medicine_name');
+  const catalog = catalogRows || [];
   openModal(`
-    <h3>Temp stock — free text</h3>
-    <p class="muted">Only Lead Pharmacist logins can order an item that isn't on the ward's stocklist.</p>
-    <label>Item description</label>
-    <input type="text" id="ts-name" placeholder="e.g. Specific brand/strength not on the list" />
+    <h3>Temp stock</h3>
+    <p class="muted">Only Lead Pharmacist logins can order an item that isn't on the ward's stocklist. Pick from the drug catalog \u2014 if what's needed isn't listed, a developer can add it there first.</p>
+    <label>Item</label>
+    <select id="ts-name">${catalog.length ? catalog.map(c => `<option value="${esc(c.medicine_name)}">${esc(c.medicine_name)}${c.pack_size ? ` (${esc(c.pack_size)})` : ''}</option>`).join('') : '<option value="">Catalog is empty</option>'}</select>
     <label style="margin-top:10px;">Quantity</label>
     <input type="number" id="ts-qty" min="1" value="1" />
     <div class="modal-error" id="ts-error"></div>
@@ -125,9 +127,9 @@ function openTempStockModal() {
       <button class="btn magenta" id="ts-add">Add to order</button>
     </div>`);
   document.getElementById('ts-add').onclick = () => {
-    const name = document.getElementById('ts-name').value.trim();
+    const name = document.getElementById('ts-name').value;
     const qty = Math.max(1, parseInt(document.getElementById('ts-qty').value, 10) || 1);
-    if (!name) { document.getElementById('ts-error').textContent = 'Enter a description.'; return; }
+    if (!name) { document.getElementById('ts-error').textContent = 'Choose an item.'; return; }
     cart.push({ medicine_name: `[Temp stock] ${name}`, quantity: qty, max_qty: qty, isTemp: true });
     closeModal();
     renderWardOrder();
@@ -143,7 +145,7 @@ async function renderWardOrder() {
   if (!orderWardId && myWards.length === 1) orderWardId = myWards[0].id;
 
   if (!orderWardId) { renderWardTiles(); return; }
-  if (!orderType) { renderOrderTypeChoice(); return; }
+  if (!orderType) { await renderOrderTypeChoice(); return; }
 
   await renderOrderBuilder();
 }
@@ -151,12 +153,12 @@ async function renderWardOrder() {
 function renderWardTiles() {
   const body = document.getElementById('body');
   body.innerHTML = `
-    <div class="card">
+    <div class="card" style="text-align:center;">
       <h2>Make a new stock request</h2>
       <p class="muted">Choose a ward to request stock for.</p>
-      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:12px; margin-top:14px;">
+      <div style="display:flex; flex-wrap:wrap; justify-content:center; gap:12px; margin-top:14px;">
         ${myWards.slice().sort((a, b) => a.name.localeCompare(b.name)).map(w => `
-          <button class="btn ghost" data-ward-tile="${w.id}" style="padding:20px 12px; font-size:14px; font-weight:600;">${esc(w.name)}</button>
+          <button class="btn ghost" data-ward-tile="${w.id}" style="width:160px; padding:20px 12px; font-size:14px; font-weight:600;">${esc(w.name)}</button>
         `).join('')}
       </div>
     </div>`;
@@ -166,19 +168,34 @@ function renderWardTiles() {
   });
 }
 
-function renderOrderTypeChoice() {
+async function renderOrderTypeChoice() {
   const body = document.getElementById('body');
   const ward = myWards.find(w => w.id === orderWardId);
+
+  const historyDays = parseFloat(systemSettings.order_history_days) || 7;
+  const since = new Date(Date.now() - historyDays * 24 * 3600 * 1000).toISOString();
+  const { data: sessionsData } = await sb.from('order_sessions').select('*').eq('ward_id', orderWardId)
+    .gte('created_at', since).order('created_at', { ascending: false }).limit(50);
+  let historyHtml = `<div class="empty">No orders in the last ${historyDays} day${historyDays > 1 ? 's' : ''}.</div>`;
+  if (sessionsData?.length) {
+    const { data: lines } = await sb.from('orders').select('*').in('session_id', sessionsData.map(s => s.id));
+    const nameById = await fetchNameMap(lines || []);
+    historyHtml = sessionsData.map(s => renderSessionCard(s, lines || [], nameById)).join('');
+  }
+
   body.innerHTML = `
-    <div class="card">
+    <div class="card" style="text-align:center;">
       ${myWards.length > 1 ? `<button class="btn ghost small" id="type-back" style="margin-bottom:10px;">\u2039 Change ward</button>` : ''}
       <h2>${esc(ward?.name || 'Ward')}</h2>
       <p class="muted">What are you requesting?</p>
-      <div style="display:flex; flex-direction:column; gap:10px; margin-top:14px; max-width:360px;">
+      <div style="display:flex; flex-direction:column; gap:10px; margin:14px auto 0; max-width:360px;">
         <button class="btn magenta" data-order-type="adhoc" style="padding:16px; font-size:14px; font-weight:600;">Adhoc order</button>
         <button class="btn magenta" data-order-type="topup" style="padding:16px; font-size:14px; font-weight:600;">Complete full top up request</button>
-        <a href="order-history.html?ward=${encodeURIComponent(orderWardId)}" class="btn ghost" style="padding:16px; font-size:14px; font-weight:600; text-align:center;">Order history</a>
       </div>
+    </div>
+    <div class="card" style="text-align:left;">
+      <h2>Recent orders \u2014 last ${historyDays} day${historyDays > 1 ? 's' : ''}</h2>
+      ${historyHtml}
     </div>`;
   const backBtn = document.getElementById('type-back');
   if (backBtn) backBtn.onclick = () => { orderWardId = null; renderWardOrder(); };
@@ -242,7 +259,7 @@ async function renderOrderBuilder() {
         <input type="text" id="ord-search" placeholder="Start typing a medicine name…" autocomplete="off" />
         <div class="results hidden" id="ord-results"></div>
       </div>`)}
-      ${(canFreetextTempStock() && orderType === 'adhoc' && !lockedOut) ? `<button class="btn ghost small" id="ord-tempstock" style="margin-top:10px;">+ Temp stock (free text)</button>` : ''}
+      ${(canFreetextTempStock() && orderType === 'adhoc' && !lockedOut) ? `<button class="btn ghost small" id="ord-tempstock" style="margin-top:10px;">+ Temp stock</button>` : ''}
     </div>
     <div class="card">
       <h2>This order <span class="muted" id="cart-count"></span></h2>
@@ -520,7 +537,7 @@ async function renderOrderBuilder() {
 
   await loadRecent();
   async function loadRecent() {
-    const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+    const since = new Date(Date.now() - (parseFloat(systemSettings.order_history_days) || 7) * 24 * 3600 * 1000).toISOString();
     const { data: sessionsData } = await sb.from('order_sessions').select('*').eq('ward_id', orderWardId)
       .gte('created_at', since).order('created_at', { ascending: false }).limit(20);
     const el = document.getElementById('ord-recent');

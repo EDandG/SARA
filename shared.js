@@ -62,7 +62,7 @@ let wards = [];
 let myWards = [];
 let bankHolidays = [];
 let processingCutoffs = { weekday: '14:00', weekend_or_holiday: '14:00' };
-let systemSettings = { topup_window_start: '00:01', topup_window_end: '17:00', duplicate_window_hours: '48', overdue_topup_preview_enabled: 'false', trust_logo_data_url: '' };
+let systemSettings = { topup_window_start: '00:01', topup_window_end: '17:00', duplicate_window_hours: '48', overdue_topup_preview_enabled: 'false', trust_logo_data_url: '', order_history_days: '7' };
 let notifyPollTimer = null;
 let lastSeenOrdersAt = null;
 

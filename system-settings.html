@@ -62,6 +62,13 @@
       <button class="btn magenta" style="margin-top:14px;" id="save-dup-window">Save duplicate window</button>
     </div>
     <div class="card">
+      <h2>Order history window</h2>
+      <p class="muted">How far back a ward's order history shows, everywhere it's displayed. Developer and Superuser can both set this.</p>
+      <label>Window (days)</label>
+      <input type="number" min="1" id="history-window" value="${systemSettings.order_history_days || '7'}" style="max-width:120px;" />
+      <button class="btn magenta" style="margin-top:14px;" id="save-history-window">Save order history window</button>
+    </div>
+    <div class="card">
       <h2>Overdue top-up preview &amp; prefill</h2>
       <p class="muted">When a ward's top-up is due and wasn't submitted on time, this lets processing staff preview what a full top-up would look like (every stocklist item at max quantity), and lets whoever has ordering access to that ward pull that same list into a real order to submit. Nothing is auto-created — this only controls whether the option appears. Developer and Superuser can both set this.</p>
       <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="overdue-toggle" style="width:auto;" ${systemSettings.overdue_topup_preview_enabled === 'true' ? 'checked' : ''} />Enabled</label>
@@ -95,6 +102,15 @@
     if (error) return toast(error.message, true);
     systemSettings.duplicate_window_hours = String(hours);
     toast('Duplicate-order window updated.');
+  };
+
+  document.getElementById('save-history-window').onclick = async () => {
+    const days = parseInt(document.getElementById('history-window').value, 10);
+    if (!days || days < 1) return toast('Enter a window of at least 1 day.', true);
+    const { error } = await sb.from('system_settings').update({ value: String(days) }).eq('key', 'order_history_days');
+    if (error) return toast(error.message, true);
+    systemSettings.order_history_days = String(days);
+    toast('Order history window updated.');
   };
 
   document.getElementById('overdue-toggle').onchange = async (e) => {
