@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Dashboard</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="bulk-dashboard.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="vendor/chart.umd.min.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderBulkAssistantDashboard() {
+  const body = document.getElementById('body');
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+
+  const [{ count: completedToday }, { count: pendingCount }, { count: pendingAdhocCount }, { count: pendingTopupCount }, { count: toFollowCount }] = await Promise.all([
+    sb.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'complete').gte('processed_at', todayStart.toISOString()),
+    sb.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+    sb.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').eq('order_type', 'adhoc'),
+    sb.from('orders').select('*', { count: 'exact', head: true }).eq('status', 'pending').eq('order_type', 'topup'),
+    sb.from('orders').select('*', { count: 'exact', head: true }).in('status', ['out_of_stock', 'part_supplied', 'non_urgent']),
+  ]);
+
+  // Wards whose top-up day is tomorrow, that haven't yet submitted a
+  // top-up order today.
+  const tomorrowName = WEEKDAY_NAMES[(new Date().getDay() + 1) % 7];
+  const mySiteIds = await myAccessibleSiteIds();
+  const topupEveWards = wards.filter(w => (w.topup_days || []).includes(tomorrowName) && w.active !== false
+    && (mySiteIds === null || mySiteIds.has(w.site_id)));
+  let incompleteTopupWards = [];
+  if (topupEveWards.length) {
+    const { data: todaysTopups } = await sb.from('order_sessions').select('ward_id')
+      .in('ward_id', topupEveWards.map(w => w.id)).eq('order_type', 'topup').gte('created_at', todayStart.toISOString());
+    const completedWardIds = new Set((todaysTopups || []).map(s => s.ward_id));
+    incompleteTopupWards = topupEveWards.filter(w => !completedWardIds.has(w.id));
+  }
+
+  body.innerHTML = `
+    <div class="row">
+      <button id="completed-tile" class="card" style="text-align:center; flex:1; width:100%; display:block; cursor:pointer; border:1px solid var(--border-soft); background:var(--card); font:inherit; color:inherit;">
+        <div class="muted" style="font-size:12px; text-transform:uppercase; letter-spacing:.04em;">Completed today</div>
+        <div style="font-size:36px; font-weight:700; color:var(--teal); margin-top:6px;">${completedToday ?? 0}</div>
+      </button>
+      <a href="out-of-stock.html" class="card" style="text-align:center; flex:1; text-decoration:none; display:block; cursor:pointer;">
+        <div class="muted" style="font-size:12px; text-transform:uppercase; letter-spacing:.04em;">To follow</div>
+        <div style="font-size:36px; font-weight:700; color:var(--red); margin-top:6px;">${toFollowCount ?? 0}</div>
+        <div class="muted" style="font-size:11px; margin-top:2px;">Out of stock + part orders</div>
+      </a>
+    </div>
+    <div class="row">
+      <a href="sessions.html" class="card" style="text-align:center; flex:1; text-decoration:none; display:block; cursor:pointer;">
+        <div class="muted" style="font-size:12px; text-transform:uppercase; letter-spacing:.04em;">Pending items</div>
+        <div style="font-size:36px; font-weight:700; color:var(--amber); margin-top:6px;">${pendingCount ?? 0}</div>
+      </a>
+      <a href="sessions.html" class="card" style="text-align:center; flex:1; text-decoration:none; display:block; cursor:pointer;">
+        <div class="muted" style="font-size:12px; text-transform:uppercase; letter-spacing:.04em;">Pending adhoc</div>
+        <div style="font-size:36px; font-weight:700; color:var(--amber); margin-top:6px;">${pendingAdhocCount ?? 0}</div>
+      </a>
+      <a href="sessions.html" class="card" style="text-align:center; flex:1; text-decoration:none; display:block; cursor:pointer;">
+        <div class="muted" style="font-size:12px; text-transform:uppercase; letter-spacing:.04em;">Pending top-ups</div>
+        <div style="font-size:36px; font-weight:700; color:var(--amber); margin-top:6px;">${pendingTopupCount ?? 0}</div>
+      </a>
+    </div>
+    ${topupEveWards.length ? `
+    <div class="card">
+      <h2>Top-ups due \u2014 not yet submitted</h2>
+      ${!incompleteTopupWards.length ? `<div class="empty">Every ward with a top-up due has already submitted.</div>` : `
+      <table><thead><tr><th>Ward</th><th></th></tr></thead><tbody>
+        ${incompleteTopupWards.map(w => `<tr><td>${esc(w.name)}</td><td style="text-align:right;"><span class="badge pending">Not yet submitted</span></td></tr>`).join('')}
+      </tbody></table>`}
+    </div>` : ''}
+    <div class="card">
+      <h2>Wards expecting top-up today</h2>
+      <div class="row" id="ward-topup-status"></div>
+    </div>
+    <div class="card">
+      <h2>Today's snapshot <span class="muted" style="font-weight:400; font-size:12px;">(live \u2014 updates automatically)</span></h2>
+      <p class="muted">Orders placed after cutoff target tomorrow's working day, so they won't appear here until then.</p>
+      <div style="display:flex; gap:16px; margin-bottom:10px;">
+        <label style="display:flex; align-items:center; gap:6px; font-weight:400; font-size:13px;"><input type="checkbox" id="slice-pending" checked style="width:auto;"> Pending</label>
+        <label style="display:flex; align-items:center; gap:6px; font-weight:400; font-size:13px;"><input type="checkbox" id="slice-actioned" checked style="width:auto;"> Actioned</label>
+        <label style="display:flex; align-items:center; gap:6px; font-weight:400; font-size:13px;"><input type="checkbox" id="slice-tofollow" style="width:auto;"> To follow</label>
+      </div>
+      <div style="width:50%; max-width:220px;"><canvas id="snapshot-pie" height="80"></canvas></div>
+    </div>`;
+
+  function currentSlices() {
+    return {
+      pending: document.getElementById('slice-pending').checked,
+      actioned: document.getElementById('slice-actioned').checked,
+      toFollow: document.getElementById('slice-tofollow').checked,
+    };
+  }
+  renderBulkPieSnapshot('snapshot-pie', currentSlices());
+  ['slice-pending', 'slice-actioned', 'slice-tofollow'].forEach(id => {
+    document.getElementById(id).onchange = () => renderBulkPieSnapshot('snapshot-pie', currentSlices());
+  });
+  renderWardTopupStatus('ward-topup-status');
+  document.getElementById('completed-tile').onclick = () => openCompletedTodayModal(todayStart);
+}
+
+async function openCompletedTodayModal(todayStart) {
+  openModal(`<h3>Completed today \u2014 by ward</h3><div id="completed-breakdown">Loading\u2026</div>
+    <div class="actions"><button class="btn ghost" onclick="closeModal()">Close</button></div>`);
+  const { data: completedOrders, error } = await sb.from('orders').select('ward_id')
+    .eq('status', 'complete').gte('processed_at', todayStart.toISOString());
+  const mount = document.getElementById('completed-breakdown');
+  if (!mount) return; // modal was closed before this resolved
+  if (error) { mount.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!completedOrders?.length) { mount.innerHTML = `<div class="empty">Nothing actioned yet today.</div>`; return; }
+  const counts = {};
+  completedOrders.forEach(o => { counts[o.ward_id] = (counts[o.ward_id] || 0) + 1; });
+  const rows = Object.entries(counts)
+    .map(([wardId, count]) => ({ name: wardName(wardId) || 'Unknown ward', count }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  mount.innerHTML = `<table><thead><tr><th>Ward</th><th>Items completed</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${esc(r.name)}</td><td>${r.count}</td></tr>`).join('')}
+  </tbody></table>`;
+}
+
+(async () => {
+  const p = await requireAuth({ require: () => canProcess() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderBulkAssistantDashboard();
+  startAutoRefresh(renderBulkAssistantDashboard, null, 30000);
+})();
+</script>
+</body>
+</html>

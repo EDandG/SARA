@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Sites</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="sites.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderSites() {
+  const body = document.getElementById('body');
+  body.innerHTML = `
+    <div class="card">
+      <h2>Create hospital site</h2>
+      <div class="row"><div><label>Site name</label><input type="text" id="new-site-name" placeholder="e.g. Worthing Hospital" /></div></div>
+      <button class="btn magenta" style="margin-top:14px;" id="create-site-btn">Create site</button>
+    </div>
+    <div class="card"><h2>Sites</h2><div id="site-list">Loading\u2026</div></div>`;
+
+  document.getElementById('create-site-btn').onclick = async () => {
+    const name = document.getElementById('new-site-name').value.trim();
+    if (!name) return toast('Enter a site name.', true);
+    const { error } = await sb.from('sites').insert({ name });
+    if (error) return toast(error.message, true);
+    toast('Site created.');
+    await refreshSitesWards();
+    renderSites();
+  };
+
+  const el = document.getElementById('site-list');
+  if (!sites.length) { el.innerHTML = `<div class="empty">No sites yet.</div>`; return; }
+  el.innerHTML = `<table><thead><tr><th>Name</th><th>Wards</th><th>Status</th><th></th></tr></thead><tbody>
+    ${sites.map(s => `<tr>
+      <td>${esc(s.name)}</td>
+      <td class="muted">${wards.filter(w => w.site_id === s.id).length}</td>
+      <td><span class="badge ${s.active ? 'active' : 'suspended'}">${s.active ? 'Active' : 'Inactive'}</span></td>
+      <td style="text-align:right;">
+        <button class="btn small ghost" data-rename="${s.id}">Rename</button>
+        <button class="btn small ghost" data-toggle="${s.id}">${s.active ? 'Deactivate' : 'Activate'}</button>
+      </td>
+    </tr>`).join('')}
+  </tbody></table>`;
+
+  el.querySelectorAll('[data-toggle]').forEach(b => b.onclick = async () => {
+    const s = sites.find(x => x.id === b.dataset.toggle);
+    const { error } = await sb.from('sites').update({ active: !s.active }).eq('id', s.id);
+    if (error) return toast(error.message, true);
+    await refreshSitesWards(); renderSites();
+  });
+  el.querySelectorAll('[data-rename]').forEach(b => b.onclick = () => {
+    const s = sites.find(x => x.id === b.dataset.rename);
+    openModal(`<h3>Rename site</h3><label>Name</label><input type="text" id="rn-input" value="${esc(s.name)}" />
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="rn-save">Save</button></div>`);
+    document.getElementById('rn-save').onclick = async () => {
+      const name = document.getElementById('rn-input').value.trim();
+      if (!name) return;
+      const { error } = await sb.from('sites').update({ name }).eq('id', s.id);
+      closeModal();
+      if (error) return toast(error.message, true);
+      await refreshSitesWards(); renderSites();
+    };
+  });
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => ['developer','superuser'].includes(pr.role) });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderSites();
+})();
+</script>
+</body>
+</html>

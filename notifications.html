@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Notifications</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="notifications.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderNotifications() {
+  const body = document.getElementById("body");
+  body.innerHTML = `
+    <div class="card">
+      <h2>Post a banner</h2>
+      <p class="muted">Shown to every logged-in user across the system. Use only for business-continuity incidents (system outages, urgent operational messages) — not routine communication.</p>
+      <label>Message</label>
+      <input type="text" id="notif-message" placeholder="e.g. Pharmacy ordering system will be down for maintenance 2–3pm today" />
+      <button class="btn magenta" style="margin-top:14px;" id="post-notif-btn">Post banner</button>
+    </div>
+    <div class="card"><h2>History</h2><div id="notif-history">Loading…</div></div>`;
+
+  document.getElementById("post-notif-btn").onclick = async () => {
+    const message = document.getElementById("notif-message").value.trim();
+    if (!message) return toast("Enter a message.", true);
+    await sb.from("notifications").update({ active: false }).eq("active", true);
+    const { error } = await sb.from("notifications").insert({ message, created_by: profile.id, active: true });
+    if (error) return toast(error.message, true);
+    toast("Banner posted.");
+    document.getElementById("notif-message").value = "";
+    loadBanner();
+    renderNotifications();
+  };
+
+  const { data, error } = await sb.from("notifications").select("*").order("created_at", { ascending: false }).limit(50);
+  const el = document.getElementById("notif-history");
+  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!data?.length) { el.innerHTML = `<div class="empty">No banners posted yet.</div>`; return; }
+  el.innerHTML = `<table><thead><tr><th>Message</th><th>Posted</th><th>Status</th><th></th></tr></thead><tbody>
+    ${data.map(n => `<tr>
+      <td>${esc(n.message)}</td><td class="muted">${fmtDate(n.created_at)}</td>
+      <td><span class="badge ${n.active ? "pending" : "complete"}">${n.active ? "Live" : "Cleared"}</span></td>
+      <td style="text-align:right;">${n.active ? `<button class="btn small danger" data-clear="${n.id}">Clear</button>` : ""}</td>
+    </tr>`).join("")}
+  </tbody></table>`;
+  el.querySelectorAll("[data-clear]").forEach(b => b.onclick = async () => {
+    await sb.from("notifications").update({ active: false }).eq("id", b.dataset.clear);
+    loadBanner();
+    renderNotifications();
+  });
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => ['developer', 'superuser'].includes(pr.role) });
+  if (!p) return;
+  document.getElementById("main").innerHTML = "<div id='body'></div>";
+  renderNotifications();
+})();
+</script>
+</body>
+</html>

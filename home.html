@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Home</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="home.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs" style="display:none;"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+(async () => {
+  const p = await requireAuth();
+  if (!p) return;
+
+  const params = new URLSearchParams(window.location.search);
+  const main = document.getElementById('main');
+
+  if (params.get('denied')) {
+    toast("You don't have access to that page.", true);
+  }
+
+  const tiles = buildAreaTiles();
+
+  if (!tiles.length) {
+    main.innerHTML = `<div class="card"><div class="empty">Your account has no functions enabled yet. Contact a superuser or admin.</div></div>`;
+    return;
+  }
+
+  // Single area of function -> skip the picker, go straight there.
+  if (tiles.length === 1) {
+    window.location.href = tiles[0].firstHref;
+    return;
+  }
+
+  main.innerHTML = `
+    <div class="card">
+      <h2>What would you like to do?</h2>
+      <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:10px;">
+        ${tiles.map(t => `
+          <a href="${t.firstHref}" class="home-tile">
+            <div class="icon">${t.icon}</div>
+            <div class="label">${esc(t.label)}</div>
+          </a>`).join('')}
+      </div>
+    </div>`;
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Log in</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+
+<div id="login-screen">
+  <div class="login-card">
+    
+    <h1>SARA</h1>
+    <div class="tag">Stock Accountability, Requests &amp; Analytics</div>
+    <div class="tag" style="margin-top:2px;">Digital ward medicines stock management</div>
+    <div class="tag" style="margin-top:2px; font-size:0.85em;">by ED&amp;G</div>
+    <label>User ID</label>
+    <input type="text" id="login-userid" autocomplete="username" autocapitalize="off" spellcheck="false" />
+    <label>Passcode</label>
+    <input type="password" id="login-password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" />
+    <div class="login-error" id="login-error"></div>
+    <button class="btn magenta" onclick="doLogin()">Log in</button>
+    <p class="muted" style="margin-top:16px; font-size:11.5px;">Sign in with your Trust-issued User ID.</p>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+// If already logged in (and not needing a reset), skip straight to home.
+sb.auth.getSession().then(async ({ data }) => {
+  const params = new URLSearchParams(window.location.search);
+  const errEl = document.getElementById('login-error');
+  if (params.get('deactivated')) errEl.textContent = 'This account is inactive. Contact an administrator.';
+  if (params.get('expired')) errEl.textContent = 'Your temporary passcode has expired. Contact an administrator for a new one.';
+  if (params.get('ended')) errEl.textContent = 'Your session was ended by an administrator. Please log in again.';
+
+  if (data.session) {
+    const { data: p } = await sb.from('profiles').select('*').eq('id', data.session.user.id).single();
+    if (p && p.active && !p.must_reset_password) {
+      window.location.href = 'home.html';
+    } else if (p && p.active && p.must_reset_password) {
+      window.location.href = 'reset-password.html';
+    }
+  }
+});
+
+window.doLogin = async function () {
+  const userId = document.getElementById('login-userid').value.trim();
+  const passcode = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+  if (!userId || !passcode) { errEl.textContent = 'Enter your User ID and passcode.'; return; }
+
+  const { data: email, error: lookupError } = await sb.rpc('email_for_user_id', { lookup_user_id: userId });
+  if (lookupError || !email) { errEl.textContent = 'Incorrect User ID or passcode.'; return; }
+
+  const { error: signInError } = await sb.auth.signInWithPassword({ email, password: passcode });
+  if (signInError) { errEl.textContent = 'Incorrect User ID or passcode.'; return; }
+
+  const { data: { user } } = await sb.auth.getUser();
+  const { data: p } = await sb.from('profiles').select('*').eq('id', user.id).single();
+  if (!p || !p.active) { errEl.textContent = 'This account is inactive. Contact an administrator.'; await sb.auth.signOut(); return; }
+  await sb.from('login_events').insert({ user_id: p.id, event_type: 'login' });
+  // Any stale revoked_at from a previous kicked session is cleared
+  // automatically by a database trigger on auth.sessions — the
+  // signInWithPassword() call above already created that new session
+  // row server-side, so there's nothing to do here client-side. That
+  // reset is deliberately NOT a callable RPC: a still-valid access
+  // token from a kicked session could otherwise call it directly,
+  // out of band, and clear its own kick before the heartbeat saw it.
+  window.location.href = p.must_reset_password ? 'reset-password.html' : 'home.html';
+};
+</script>
+</body>
+</html>

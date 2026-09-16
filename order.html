@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Build new requisition</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="order.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+let cart = [], orderWardId = null, orderType = 'adhoc';
+let topupLockHeldByMe = false, topupLockPollTimer = null, topupHeartbeatTimer = null;
+
+// Whole-ward lock: acquired the moment a top-up cart gets its first
+// item, blocks every OTHER user of the ward from building either an
+// adhoc or top-up order (server-enforced via the orders insert
+// policy, not just this banner) until submit, explicit cancel, or 30
+// minutes of inactivity. The holder is unaffected by their own lock.
+async function checkTopupLock(ward) {
+  const { data: rows } = await sb.from('ward_ordering_locks').select('*').eq('ward_id', ward);
+  const lock = rows && rows[0];
+  if (!lock) return null;
+  const staleCutoff = new Date(Date.now() - 30 * 60000);
+  if (new Date(lock.last_activity_at) < staleCutoff) return null;
+  if (lock.locked_by === profile.id) { topupLockHeldByMe = true; return null; }
+  const { data: names } = await sb.rpc('staff_display_names');
+  const holderName = (names || []).find(n => n.id === lock.locked_by)?.full_name || 'Another user';
+  return holderName;
+}
+
+function stopTopupHeartbeat() {
+  if (topupHeartbeatTimer) { clearInterval(topupHeartbeatTimer); topupHeartbeatTimer = null; }
+}
+async function releaseTopupLock(ward) {
+  stopTopupHeartbeat();
+  if (topupLockHeldByMe) {
+    topupLockHeldByMe = false;
+    await sb.rpc('release_topup_lock', { target_ward: ward });
+  }
+}
+function startTopupHeartbeat(ward) {
+  stopTopupHeartbeat();
+  topupHeartbeatTimer = setInterval(() => { sb.rpc('heartbeat_topup_lock', { target_ward: ward }); }, 5 * 60000);
+}
+
+// ---------- PREDICTIVE TOP-UP SUGGESTIONS ----------
+// Only meaningful once there's a full 3-month window to analyse —
+// availability (the ward toggle) and usefulness (enough history) are
+// separate: a superuser can enable the toggle any time, but the
+// option only appears to the ward once real data backs it.
+async function wardHasEnoughHistory(wardId) {
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 90);
+  const { data } = await sb.from('orders').select('id')
+    .eq('ward_id', wardId).lte('created_at', cutoff.toISOString()).limit(1);
+  return !!(data && data.length);
+}
+
+async function fetchPredictiveSuggestions(wardId, stocklistItems) {
+  const since = new Date(); since.setDate(since.getDate() - 90);
+  const { data } = await sb.from('orders').select('medicine_name, parent_order_id')
+    .eq('ward_id', wardId).in('order_type', ['adhoc', 'topup']).gte('created_at', since.toISOString());
+  const stocklistNames = new Set(stocklistItems.map(i => i.medicine_name));
+  const counts = {};
+  (data || []).forEach(o => {
+    if (o.parent_order_id) return; // the remainder row from a part-supply isn't a second request
+    if (!stocklistNames.has(o.medicine_name)) return; // only suggest items still on the current stocklist
+    counts[o.medicine_name] = (counts[o.medicine_name] || 0) + 1;
+  });
+  return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 20).map(([name]) => name);
+}
+
+// ---------- OVERDUE TOP-UP: raise it for real ----------
+// A ward whose top-up is due TODAY should have submitted YESTERDAY —
+// same "on time" definition used everywhere else in this system.
+// System-wide toggle (developer/superuser) governs whether this
+// option can appear at all; being genuinely overdue is what actually
+// triggers it, same distinction as the predictive-suggestions toggle.
+async function isWardOverdueForTopup(wardId) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayName = WEEKDAY_NAMES[today.getDay()];
+  const ward = wards.find(w => w.id === wardId);
+  if (!ward || !(ward.topup_days || []).includes(todayName)) return false;
+  const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+  const { data: sessions } = await sb.from('order_sessions').select('created_at')
+    .eq('ward_id', wardId).eq('order_type', 'topup').gte('created_at', yesterday.toISOString());
+  const onTime = (sessions || []).some(s => isoDate(new Date(s.created_at)) === isoDate(yesterday));
+  return !onTime;
+}
+
+function openTempStockModal() {
+  openModal(`
+    <h3>Temp stock — free text</h3>
+    <p class="muted">Only Lead Pharmacist logins can order an item that isn't on the ward's stocklist.</p>
+    <label>Item description</label>
+    <input type="text" id="ts-name" placeholder="e.g. Specific brand/strength not on the list" />
+    <label style="margin-top:10px;">Quantity</label>
+    <input type="number" id="ts-qty" min="1" value="1" />
+    <div class="modal-error" id="ts-error"></div>
+    <div class="actions">
+      <button class="btn ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn magenta" id="ts-add">Add to order</button>
+    </div>`);
+  document.getElementById('ts-add').onclick = () => {
+    const name = document.getElementById('ts-name').value.trim();
+    const qty = Math.max(1, parseInt(document.getElementById('ts-qty').value, 10) || 1);
+    if (!name) { document.getElementById('ts-error').textContent = 'Enter a description.'; return; }
+    cart.push({ medicine_name: `[Temp stock] ${name}`, quantity: qty, max_qty: qty, isTemp: true });
+    closeModal();
+    renderWardOrder();
+  };
+}
+
+async function renderWardOrder() {
+  const body = document.getElementById('body');
+  if (!myWards.length) { body.innerHTML = `<div class="card"><div class="empty">No wards have been allocated to your login yet. Contact an administrator.</div></div>`; return; }
+  if (!orderWardId || !myWards.find(w => w.id === orderWardId)) orderWardId = myWards[0].id;
+
+  const { data: items, error } = await sb.from('blist_items').select('*').eq('ward_id', orderWardId).order('medicine_name');
+  if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+
+  const currentWard = wards.find(w => w.id === orderWardId);
+  const topupDays = currentWard?.topup_days || [];
+  const wardAllowsAboveMax = currentWard?.allow_above_max_adhoc !== false;
+
+  const lockHolderName = await checkTopupLock(orderWardId);
+  const lockedOut = !!lockHolderName;
+
+  let showPredictiveOption = false;
+  if (orderType === 'topup' && currentWard?.predictive_ordering_enabled && !lockedOut) {
+    showPredictiveOption = await wardHasEnoughHistory(orderWardId);
+  }
+
+  let showOverdueFillOption = false;
+  if (orderType === 'topup' && systemSettings.overdue_topup_preview_enabled === 'true' && !lockedOut) {
+    showOverdueFillOption = await isWardOverdueForTopup(orderWardId);
+  }
+
+  body.innerHTML = `
+    <div id="topup-banner-mount"></div>
+    ${lockedOut ? `<div class="card" style="border-color:var(--amber);"><p style="margin:0; color:var(--amber); font-weight:600;">⏳ ${esc(lockHolderName)} is currently building this ward's top-up order. Ordering is paused for everyone else here until they submit or cancel it — this'll clear automatically, no need to refresh.</p></div>` : ''}
+    <div class="card">
+      <h2>Build new requisition</h2>
+      ${myWards.length > 1 ? `<label>Ward</label>
+        <select id="order-ward" style="margin-bottom:14px;" ${lockedOut ? 'disabled' : ''}>${myWards.map(w => `<option value="${w.id}" ${w.id === orderWardId ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
+      <label>Order type</label>
+      <div style="display:flex; gap:16px; margin-bottom:10px;">
+        <label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="radio" name="order-type" value="adhoc" ${orderType === 'adhoc' ? 'checked' : ''} style="width:auto;" ${lockedOut ? 'disabled' : ''}> Adhoc order</label>
+        <label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="radio" name="order-type" value="topup" ${orderType === 'topup' ? 'checked' : ''} style="width:auto;" ${lockedOut ? 'disabled' : ''}> Top up order</label>
+      </div>
+      ${orderType === 'topup' ? `<p class="muted" style="margin-bottom:10px; font-size:12px;">Top up orders can't exceed each item's usual maximum — this keeps them from needing pharmacist approval.</p>` : ''}
+      ${orderType === 'adhoc' && wardAllowsAboveMax ? `<p class="muted" style="margin-bottom:10px; font-size:12px;">You can order above a stocklist item's usual max on this ward. If you do, please let your pharmacist know you've requested an above-max order — it will need their approval before it's processed.</p>` : ''}
+      ${topupDays.length ? `<p class="muted" style="margin-bottom:10px;">Your top up days are: <b>${esc(topupDays.join(', '))}</b></p>` : ''}
+      ${showPredictiveOption ? `<button class="btn ghost small" id="ord-predictive" style="margin-bottom:10px;">✨ Add your usual top-up items</button>
+        <p class="muted" style="margin-top:-6px; margin-bottom:10px; font-size:11.5px;">Based on what this ward has ordered most over the last 3 months. Everything's added at quantity 1 — adjust or remove as needed before submitting.</p>` : ''}
+      ${showOverdueFillOption ? `<button class="btn ghost small" id="ord-overdue-fill" style="margin-bottom:10px;">⚠ Fill overdue top-up (full stocklist at max)</button>
+        <p class="muted" style="margin-top:-6px; margin-bottom:10px; font-size:11.5px;">This ward's top-up wasn't submitted on time. This adds every current stocklist item at its usual max quantity — adjust or remove before submitting.</p>` : ''}
+      ${lockedOut ? '' : (!items?.length ? `<div class="empty">No stocklist has been set up for this ward yet. Contact pharmacy or admin.</div>` : `
+      <label>Search medicine</label>
+      <div class="searchbox">
+        <input type="text" id="ord-search" placeholder="Start typing a medicine name…" autocomplete="off" />
+        <div class="results hidden" id="ord-results"></div>
+      </div>`)}
+      ${(canFreetextTempStock() && orderType === 'adhoc' && !lockedOut) ? `<button class="btn ghost small" id="ord-tempstock" style="margin-top:10px;">+ Temp stock (free text)</button>` : ''}
+    </div>
+    <div class="card">
+      <h2>This order <span class="muted" id="cart-count"></span></h2>
+      <div id="cart-list"></div>
+      <div style="display:flex; gap:10px; margin-top:16px;">
+        <button class="btn magenta" id="cart-submit" disabled>Submit order</button>
+        <button class="btn ghost" id="cart-cancel" disabled>Cancel order</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Recent submissions from this ward</h2>
+      <div id="ord-recent">Loading…</div>
+      ${statusLegendHtml()}
+    </div>`;
+
+  renderTopupBanner(currentWard, document.getElementById('topup-banner-mount'));
+
+  if (topupLockPollTimer) clearInterval(topupLockPollTimer);
+  topupLockPollTimer = setInterval(async () => {
+    if (document.hidden) return;
+    const stillLocked = await checkTopupLock(orderWardId);
+    // Only re-render on a state change, to avoid interrupting typing.
+    if (!!stillLocked !== lockedOut) renderWardOrder();
+  }, 20000);
+
+  if (lockedOut) return;
+
+  const wardSelect = document.getElementById('order-ward');
+  if (wardSelect) wardSelect.onchange = async (e) => { await releaseTopupLock(orderWardId); orderWardId = e.target.value; cart = []; renderWardOrder(); };
+
+  document.querySelectorAll('input[name=order-type]').forEach(r => r.onchange = async (e) => { await releaseTopupLock(orderWardId); orderType = e.target.value; cart = []; renderWardOrder(); });
+
+  const tempStockBtn = document.getElementById('ord-tempstock');
+  if (tempStockBtn) tempStockBtn.onclick = () => openTempStockModal();
+
+  const predictiveBtn = document.getElementById('ord-predictive');
+  if (predictiveBtn) predictiveBtn.onclick = async () => {
+    predictiveBtn.disabled = true;
+    predictiveBtn.textContent = 'Adding\u2026';
+    if (cart.length === 0 && !topupLockHeldByMe) {
+      const { data: acquired, error: lockErr } = await sb.rpc('acquire_topup_lock', { target_ward: orderWardId });
+      if (lockErr) { toast(lockErr.message, true); renderWardOrder(); return; }
+      if (!acquired) { toast("This ward's top-up order is currently being built by someone else.", true); renderWardOrder(); return; }
+      topupLockHeldByMe = true;
+      startTopupHeartbeat(orderWardId);
+    }
+    const suggestions = await fetchPredictiveSuggestions(orderWardId, items);
+    let added = 0;
+    suggestions.forEach(name => {
+      if (cart.find(c => c.medicine_name === name)) return;
+      const item = items.find(i => i.medicine_name === name);
+      if (!item) return;
+      cart.push({ medicine_name: item.medicine_name, quantity: 1, max_qty: item.max_qty });
+      added++;
+    });
+    renderCart();
+    if (!added && !cart.length) toast('No suggestions yet \u2014 this ward may not have ordered these items in the last 3 months.', true);
+    else if (!added) toast('Your usual items are already in this order.');
+    else toast(`Added ${added} usual item${added > 1 ? 's' : ''} at quantity 1 \u2014 adjust as needed.`);
+  };
+
+  const overdueFillBtn = document.getElementById('ord-overdue-fill');
+  if (overdueFillBtn) overdueFillBtn.onclick = async () => {
+    overdueFillBtn.disabled = true;
+    overdueFillBtn.textContent = 'Adding\u2026';
+    if (cart.length === 0 && !topupLockHeldByMe) {
+      const { data: acquired, error: lockErr } = await sb.rpc('acquire_topup_lock', { target_ward: orderWardId });
+      if (lockErr) { toast(lockErr.message, true); renderWardOrder(); return; }
+      if (!acquired) { toast("This ward's top-up order is currently being built by someone else.", true); renderWardOrder(); return; }
+      topupLockHeldByMe = true;
+      startTopupHeartbeat(orderWardId);
+    }
+    let added = 0;
+    (items || []).forEach(item => {
+      if (cart.find(c => c.medicine_name === item.medicine_name)) return;
+      cart.push({ medicine_name: item.medicine_name, quantity: item.max_qty, max_qty: item.max_qty });
+      added++;
+    });
+    renderCart();
+    if (!added) toast('Every stocklist item is already in this order.');
+    else toast(`Added ${added} item${added > 1 ? 's' : ''} at usual max quantity \u2014 adjust as needed.`);
+  };
+
+  renderCart();
+  if (!items?.length) { loadRecent(); return; }
+
+  const searchEl = document.getElementById('ord-search');
+  const resultsEl = document.getElementById('ord-results');
+  searchEl.oninput = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    if (!q) { resultsEl.classList.add('hidden'); return; }
+    const matches = items.filter(i => i.medicine_name.toLowerCase().includes(q)).slice(0, 12);
+    resultsEl.innerHTML = matches.length
+      ? matches.map(i => `<div data-id="${i.id}">${esc(i.medicine_name)} <span class="muted">(max ${i.max_qty})</span></div>`).join('')
+      : `<div class="none">No matches</div>`;
+    resultsEl.classList.remove('hidden');
+    resultsEl.querySelectorAll('[data-id]').forEach(d => d.onclick = () => addToCart(items.find(i => i.id === d.dataset.id)));
+  };
+  document.addEventListener('click', (e) => { if (!e.target.closest('.searchbox')) resultsEl.classList.add('hidden'); });
+
+  async function addToCart(item) {
+    document.getElementById('ord-search').value = '';
+    resultsEl.classList.add('hidden');
+
+    if (orderType === 'topup' && cart.length === 0 && !topupLockHeldByMe) {
+      const { data: acquired, error: lockErr } = await sb.rpc('acquire_topup_lock', { target_ward: orderWardId });
+      if (lockErr) { toast(lockErr.message, true); return; }
+      if (!acquired) { toast("This ward's top-up order is currently being built by someone else.", true); renderWardOrder(); return; }
+      topupLockHeldByMe = true;
+      startTopupHeartbeat(orderWardId);
+    }
+
+    const addNow = () => {
+      const existing = cart.find(c => c.medicine_name === item.medicine_name);
+      if (existing) {
+        if (orderType === 'topup' && !existing.isTemp && existing.quantity >= existing.max_qty) {
+          renderCart(); return;
+        }
+        if (orderType === 'adhoc' && !existing.isTemp && !wardAllowsAboveMax && existing.quantity >= existing.max_qty) {
+          toast(`${existing.medicine_name} is capped at ${existing.max_qty} for this ward — contact your pharmacist if you need more.`, true);
+          renderCart(); return;
+        }
+        existing.quantity++;
+      } else cart.push({ medicine_name: item.medicine_name, quantity: 1, max_qty: item.max_qty });
+      renderCart();
+    };
+
+    // Still awaiting processing: no time limit — however old, nobody's
+    // acted on it yet, so it's always worth a nudge. Covers pending,
+    // pending_approval, and non_urgent (deprioritised but still unmet).
+    const { data: stillPending } = await sb.from('orders').select('id')
+      .eq('ward_id', orderWardId).eq('medicine_name', item.medicine_name)
+      .in('status', ['pending', 'pending_approval', 'non_urgent']).limit(1);
+
+    if (stillPending && stillPending.length) {
+      confirmDialog('Already awaiting processing',
+        `${esc(item.medicine_name)} was already ordered by this ward and hasn't been processed yet. Add to this order anyway?`,
+        'Add anyway', addNow);
+      return;
+    }
+
+    // Fulfilled recently: within the configurable window (default
+    // 48h), checked against when it was actually supplied/processed —
+    // not when it was originally ordered — since a backlog order that
+    // sat pending for days and was only just supplied is exactly the
+    // "did we just do this?" case worth flagging.
+    const dupWindowHours = parseFloat(systemSettings.duplicate_window_hours) || 48;
+    const since = new Date(Date.now() - dupWindowHours * 3600000).toISOString();
+    const { data: fulfilled } = await sb.from('orders').select('supplied_at, processed_at')
+      .eq('ward_id', orderWardId).eq('medicine_name', item.medicine_name).eq('status', 'complete')
+      .order('processed_at', { ascending: false }).limit(5);
+    const recentFulfilled = (fulfilled || []).find(o => {
+      const at = o.supplied_at || o.processed_at;
+      return at && new Date(at) >= new Date(since);
+    });
+
+    if (recentFulfilled) {
+      const at = recentFulfilled.supplied_at || recentFulfilled.processed_at;
+      const hoursAgo = Math.round((Date.now() - new Date(at)) / 3600000);
+      confirmDialog('Recently ordered',
+        `${esc(item.medicine_name)} was already ordered and fulfilled by this ward ${hoursAgo <= 1 ? 'within the last hour' : hoursAgo + ' hour(s) ago'}. Add to this order anyway?`,
+        'Add anyway', addNow);
+      return;
+    }
+
+    // Out of stock, part-supplied, superseded, duplicate, or rejected:
+    // silent. Out-of-stock resupply in particular relies on this —
+    // the backend supersession trigger handles clearing the stale
+    // to-follow line, no warning needed here.
+    addNow();
+  }
+
+  function renderCart() {
+    const listEl = document.getElementById('cart-list');
+    const countEl = document.getElementById('cart-count');
+    const submitBtn = document.getElementById('cart-submit');
+    const cancelBtn = document.getElementById('cart-cancel');
+    countEl.textContent = cart.length ? `(${cart.length} item${cart.length > 1 ? 's' : ''})` : '';
+    submitBtn.disabled = !cart.length;
+    cancelBtn.disabled = !cart.length;
+    if (!cart.length) { listEl.innerHTML = `<div class="empty">No items added yet — search above to build the order.</div>`; return; }
+    listEl.innerHTML = cart.map((c, i) => {
+      const overMax = orderType === 'adhoc' && !c.isTemp && c.quantity > c.max_qty;
+      const capsAtMax = (orderType === 'topup' || (orderType === 'adhoc' && !wardAllowsAboveMax)) && !c.isTemp;
+      return `
+      <div style="width:100%; margin-top:8px;">
+        <div class="selected-pill" style="display:flex; width:100%;">
+          <b style="flex:1;">${esc(c.medicine_name)}</b>
+          <div class="qty-stepper" style="margin-top:0;">
+            <button data-dec="${i}">−</button>
+            <input type="number" min="1" ${capsAtMax ? `max="${c.max_qty}"` : ''} id="cart-qty-${i}" value="${c.quantity}" style="width:48px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:2px 0; font-weight:700;" />
+            <button data-inc="${i}">+</button>
+          </div>
+          <button data-remove="${i}" title="Remove" style="margin-left:10px;">✕</button>
+        </div>
+        ${overMax ? `<p style="color:#8a6d00; background:#fff8e1; border:1px solid #f0d98c; border-radius:8px; padding:6px 10px; font-size:12.5px; margin:6px 0 0;">⚠ Items above max quantity require pharmacist approval and may cause delays in processing.</p>` : ''}
+      </div>`;
+    }).join('');
+    listEl.querySelectorAll('[data-dec]').forEach(b => b.onclick = () => {
+      const i = +b.dataset.dec;
+      if (cart[i].quantity > 1) cart[i].quantity--;
+      renderCart();
+    });
+    listEl.querySelectorAll('[data-inc]').forEach(b => b.onclick = () => {
+      const i = +b.dataset.inc;
+      const c = cart[i];
+      if (orderType === 'topup' && !c.isTemp && c.quantity >= c.max_qty) { renderCart(); return; }
+      if (orderType === 'adhoc' && !c.isTemp && !wardAllowsAboveMax && c.quantity >= c.max_qty) {
+        toast(`${c.medicine_name} is capped at ${c.max_qty} for this ward — contact your pharmacist if you need more.`, true);
+        renderCart(); return;
+      }
+      c.quantity++;
+      renderCart();
+    });
+    listEl.querySelectorAll('input[type=number]').forEach(inp => {
+      const i = +inp.id.replace('cart-qty-', '');
+      inp.onchange = () => {
+        let qty = Math.max(1, parseInt(inp.value, 10) || 1);
+        const c = cart[i];
+        if (orderType === 'topup' && !c.isTemp) qty = Math.min(qty, c.max_qty);
+        if (orderType === 'adhoc' && !c.isTemp && !wardAllowsAboveMax && qty > c.max_qty) {
+          toast(`${c.medicine_name} is capped at ${c.max_qty} for this ward.`, true);
+          qty = c.max_qty;
+        }
+        c.quantity = qty;
+        renderCart();
+      };
+    });
+    listEl.querySelectorAll('[data-remove]').forEach(b => b.onclick = () => { cart.splice(+b.dataset.remove, 1); renderCart(); });
+  }
+
+  document.getElementById('cart-submit').onclick = async () => {
+    if (!cart.length) return;
+    if (orderType === 'adhoc' && !wardAllowsAboveMax) {
+      const blocked = cart.filter(c => !c.isTemp && c.quantity > c.max_qty);
+      if (blocked.length) {
+        toast(`This ward isn't authorised to order above max — fix ${blocked.map(c => c.medicine_name).join(', ')} before submitting.`, true);
+        return;
+      }
+    }
+    const submitBtn = document.getElementById('cart-submit');
+    submitBtn.disabled = true;
+
+    const { data: session, error: sessErr } = await sb.from('order_sessions')
+      .insert({ ward_id: orderWardId, submitted_by: profile.id, order_type: orderType }).select().single();
+    if (sessErr) { toast(sessErr.message, true); submitBtn.disabled = false; return; }
+
+    const { error: linesErr } = await sb.from('orders').insert(cart.map(c => ({
+      ward_id: orderWardId, ordered_by: profile.id, session_id: session.id,
+      medicine_name: c.medicine_name, quantity: c.quantity, order_type: orderType,
+      status: (orderType === 'adhoc' && !c.isTemp && c.quantity > c.max_qty) ? 'pending_approval' : 'pending',
+    })));
+    if (linesErr) {
+      toast(`Order was not submitted — ${linesErr.message}`, true);
+      submitBtn.disabled = false;
+      return;
+    }
+
+    const anyAboveMax = orderType === 'adhoc' && cart.some(c => !c.isTemp && c.quantity > c.max_qty);
+    toast(anyAboveMax
+      ? `Order submitted — ${cart.length} item${cart.length > 1 ? 's' : ''} (some await pharmacist approval).`
+      : `Order submitted — ${cart.length} item${cart.length > 1 ? 's' : ''}.`);
+    cart = [];
+    await releaseTopupLock(orderWardId);
+    renderCart();
+    loadRecent();
+  };
+
+  document.getElementById('cart-cancel').onclick = async () => {
+    if (!cart.length) return;
+    confirmDialog('Cancel this order', 'Discard everything added so far? This can\'t be undone.', 'Discard order', async () => {
+      cart = [];
+      await releaseTopupLock(orderWardId);
+      renderCart();
+      if (orderType === 'topup') renderWardOrder();
+    }, true);
+  };
+
+  await loadRecent();
+  async function loadRecent() {
+    const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+    const { data: sessionsData } = await sb.from('order_sessions').select('*').eq('ward_id', orderWardId)
+      .gte('created_at', since).order('created_at', { ascending: false }).limit(20);
+    const el = document.getElementById('ord-recent');
+    if (!sessionsData?.length) { el.innerHTML = `<div class="empty">No orders submitted in the last 7 days.</div>`; return; }
+    const { data: lines } = await sb.from('orders').select('*').in('session_id', sessionsData.map(s => s.id));
+    const nameById = await fetchNameMap(lines || []);
+    el.innerHTML = sessionsData.map(s => renderSessionCard(s, lines || [], nameById)).join('');
+  }
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => !!pr.can_order });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderWardOrder();
+})();
+</script>
+</body>
+</html>

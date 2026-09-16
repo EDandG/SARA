@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Wards</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="wards.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderWards() {
+  const body = document.getElementById('body');
+  if (!sites.length) { body.innerHTML = `<div class="card"><div class="empty">Create a hospital site first, then add wards to it.</div></div>`; return; }
+
+  const fullAccess = isSuperuser(); // top tier (developer or superuser) \u2014 full CRUD
+  // Admin only gets suspend/activate, scoped to wards at sites they
+  // themselves have access to \u2014 never full ward editing.
+  let adminSiteIds = [];
+  if (!fullAccess && isAdminRole()) {
+    const { data: mySites } = await sb.from('user_sites').select('site_id').eq('user_id', profile.id);
+    adminSiteIds = (mySites || []).map(s => s.site_id);
+  }
+  const visibleWards = fullAccess ? wards : wards.filter(w => adminSiteIds.includes(w.site_id));
+
+  body.innerHTML = `
+    ${fullAccess ? `<div class="card">
+      <h2>Create ward</h2>
+      <div class="row">
+        <div><label>Site</label><select id="new-ward-site">${sites.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
+        <div><label>Ward name</label><input type="text" id="new-ward-name" placeholder="e.g. ED Majors" /></div>
+      </div>
+      <button class="btn magenta" style="margin-top:14px;" id="create-ward-btn">Create ward</button>
+    </div>` : ''}
+    <div class="card"><h2>Wards</h2><div id="ward-list">Loading\u2026</div></div>`;
+
+  if (fullAccess) {
+    document.getElementById('create-ward-btn').onclick = async () => {
+      const site_id = document.getElementById('new-ward-site').value;
+      const name = document.getElementById('new-ward-name').value.trim();
+      if (!name) return toast('Enter a ward name.', true);
+      const { error } = await sb.from('wards').insert({ site_id, name });
+      if (error) return toast(error.message, true);
+      toast('Ward created.');
+      document.getElementById('new-ward-name').value = '';
+      await refreshSitesWards(); renderWards();
+    };
+  }
+
+  const el = document.getElementById('ward-list');
+  if (!visibleWards.length) { el.innerHTML = `<div class="empty">No wards yet.</div>`; return; }
+  el.innerHTML = `<table><thead><tr><th>Name</th><th>Site</th><th>Status</th>${fullAccess ? '<th>Above-max adhoc</th><th>Predictive ordering</th><th>Stock substitution</th>' : ''}<th></th></tr></thead><tbody>
+    ${visibleWards.map(w => `<tr>
+      <td>${esc(w.name)}</td><td>${w.site_id ? esc(siteName(w.site_id)) : '<span class="muted">Unassigned</span>'}</td>
+      <td><span class="badge ${w.active ? 'active' : 'suspended'}">${w.active ? 'Active' : 'Inactive'}</span></td>
+      ${fullAccess ? `<td><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="above-max-cb" data-ward="${w.id}" ${w.allow_above_max_adhoc !== false ? 'checked' : ''} style="width:auto;" />Allowed</label></td>
+      <td><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="predictive-cb" data-ward="${w.id}" ${w.predictive_ordering_enabled ? 'checked' : ''} style="width:auto;" />Enabled</label></td>
+      <td><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="substitution-cb" data-ward="${w.id}" ${w.allow_stock_substitution ? 'checked' : ''} style="width:auto;" />Enabled</label></td>` : ''}
+      <td style="text-align:right; white-space:nowrap;">
+        ${fullAccess ? `
+        <button class="btn small ghost" data-site="${w.id}">Set site</button>
+        <button class="btn small ghost" data-topup="${w.id}">Top-up days</button>
+        <button class="btn small ghost" data-rename="${w.id}">Rename</button>
+        ` : ''}
+        <button class="btn small ghost" data-toggle="${w.id}">${w.active ? 'Deactivate' : 'Activate'}</button>
+        ${fullAccess ? `<button class="btn small danger" data-del="${w.id}">Delete</button>` : ''}
+      </td>
+    </tr>`).join('')}
+  </tbody></table>`;
+
+  el.querySelectorAll('[data-toggle]').forEach(b => b.onclick = async () => {
+    const w = visibleWards.find(x => x.id === b.dataset.toggle);
+    const { error } = await sb.rpc('set_ward_active', { target_ward: w.id, is_active: !w.active });
+    if (error) return toast(error.message, true);
+    toast(w.active ? 'Ward suspended.' : 'Ward reactivated.');
+    await refreshSitesWards(); renderWards();
+  });
+  el.querySelectorAll('.above-max-cb').forEach(cb => cb.onchange = async () => {
+    const { error } = await sb.from('wards').update({ allow_above_max_adhoc: cb.checked }).eq('id', cb.dataset.ward);
+    if (error) { toast(error.message, true); cb.checked = !cb.checked; return; }
+    toast(cb.checked ? 'Above-max adhoc orders now allowed for this ward.' : 'Above-max adhoc orders now blocked for this ward.');
+    await refreshSitesWards();
+  });
+  el.querySelectorAll('.predictive-cb').forEach(cb => cb.onchange = async () => {
+    const { error } = await sb.from('wards').update({ predictive_ordering_enabled: cb.checked }).eq('id', cb.dataset.ward);
+    if (error) { toast(error.message, true); cb.checked = !cb.checked; return; }
+    toast(cb.checked ? 'Predictive ordering enabled for this ward.' : 'Predictive ordering disabled for this ward.');
+    await refreshSitesWards();
+  });
+  el.querySelectorAll('.substitution-cb').forEach(cb => cb.onchange = async () => {
+    const { error } = await sb.from('wards').update({ allow_stock_substitution: cb.checked }).eq('id', cb.dataset.ward);
+    if (error) { toast(error.message, true); cb.checked = !cb.checked; return; }
+    toast(cb.checked ? 'Stock substitution now allowed for this ward.' : 'Stock substitution now blocked for this ward.');
+    await refreshSitesWards();
+  });
+  el.querySelectorAll('[data-rename]').forEach(b => b.onclick = () => {
+    const w = wards.find(x => x.id === b.dataset.rename);
+    openModal(`<h3>Rename ward</h3><label>Name</label><input type="text" id="rn-input" value="${esc(w.name)}" />
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="rn-save">Save</button></div>`);
+    document.getElementById('rn-save').onclick = async () => {
+      const name = document.getElementById('rn-input').value.trim();
+      if (!name) return;
+      const { error } = await sb.from('wards').update({ name }).eq('id', w.id);
+      closeModal();
+      if (error) return toast(error.message, true);
+      await refreshSitesWards(); renderWards();
+    };
+  });
+  el.querySelectorAll('[data-site]').forEach(b => b.onclick = () => {
+    const w = wards.find(x => x.id === b.dataset.site);
+    openModal(`<h3>Set site for ${esc(w.name)}</h3><label>Site</label>
+      <select id="sw-select">${sites.map(s => `<option value="${s.id}" ${s.id === w.site_id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="sw-save">Save</button></div>`);
+    document.getElementById('sw-save').onclick = async () => {
+      const site_id = document.getElementById('sw-select').value;
+      const { error } = await sb.from('wards').update({ site_id }).eq('id', w.id);
+      closeModal();
+      if (error) return toast(error.message, true);
+      await refreshSitesWards(); renderWards();
+    };
+  });
+  el.querySelectorAll('[data-topup]').forEach(b => b.onclick = () => {
+    openTopupModal(wards.find(x => x.id === b.dataset.topup), renderWards);
+  });
+  el.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    confirmDialog('Delete ward', 'This also deletes its stocklist and order history. This cannot be undone.', 'Delete ward', async () => {
+      const { error } = await sb.from('wards').delete().eq('id', b.dataset.del);
+      if (error) return toast(error.message, true);
+      toast('Ward deleted.');
+      await refreshSitesWards(); renderWards();
+    }, true);
+  });
+}
+
+(async () => {
+  const p = await requireAuth({ require: () => canManageWardsSites() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderWards();
+})();
+</script>
+</body>
+</html>

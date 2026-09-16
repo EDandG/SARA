@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Sessions</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="sessions.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderPending() {
+  const body = document.getElementById('body');
+
+  const { data: pendingLines, error } = await sb.from('orders').select('session_id').eq('status', 'pending');
+  if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  const openSessionIds = [...new Set((pendingLines || []).map(l => l.session_id).filter(Boolean))];
+
+  const [{ data: sessionsData }, { data: awaitingCheckData }] = await Promise.all([
+    openSessionIds.length
+      ? sb.from('order_sessions').select('*').in('id', openSessionIds).order('created_at')
+      : Promise.resolve({ data: [] }),
+    canCheckPicking()
+      ? sb.from('order_sessions').select('*').not('picking_confirmed_at', 'is', null).is('checked_at', null).order('picking_confirmed_at')
+      : Promise.resolve({ data: [] }),
+  ]);
+
+  const allLineSessionIds = [...new Set([...(sessionsData || []).map(s => s.id), ...(awaitingCheckData || []).map(s => s.id)])];
+  const { data: allLines } = allLineSessionIds.length
+    ? await sb.from('orders').select('*').in('session_id', allLineSessionIds)
+    : { data: [] };
+
+  const nameIds = [...(sessionsData || []).map(s => s.submitted_by), ...(sessionsData || []).map(s => s.picking_claimed_by),
+    ...(awaitingCheckData || []).map(s => s.picking_confirmed_by)].filter(Boolean);
+  const { data: names } = await sb.rpc('staff_display_names');
+  const nameById = Object.fromEntries((names || []).map(n => [n.id, n.full_name]));
+
+  // Live-feel: track which session ids we've already shown, so a
+  // genuinely new arrival gets a brief highlight instead of quietly
+  // appearing in the redraw.
+  const currentIds = new Set((sessionsData || []).map(s => s.id));
+  const justArrived = new Set([...currentIds].filter(id => !seenSessionIds.has(id)));
+  seenSessionIds = currentIds;
+
+  const staleCutoffMs = Date.now() - 30 * 60000;
+
+  function claimStatusCell(s) {
+    if (!s.picking_claimed_by) return `<button class="btn small magenta" data-start="${s.id}">Start process</button>`;
+    const stale = new Date(s.picking_claimed_at ? s.picking_last_activity_at : 0).getTime() < staleCutoffMs;
+    if (s.picking_claimed_by === profile.id && !stale) return `<button class="btn small magenta" data-continue="${s.id}">Continue</button>`;
+    if (stale) return `<button class="btn small magenta" data-start="${s.id}">Start process</button>`;
+    return `<span class="badge pending_approval">In progress by ${esc(nameById[s.picking_claimed_by] || 'someone')}</span>`;
+  }
+
+  function queueTableHtml(list) {
+    if (!list.length) return `<div class="empty">Nothing here right now.</div>`;
+    return `<table><thead><tr><th>Ward</th><th>Submitted by</th><th>Submitted</th><th>Items</th><th>Pending</th><th></th><th></th></tr></thead><tbody>
+      ${list.map(s => {
+        const lines = (allLines || []).filter(o => o.session_id === s.id);
+        const pendingCount = lines.filter(o => o.status === 'pending').length;
+        const oldestPending = lines.filter(o => o.status === 'pending').sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0];
+        return `<tr class="${justArrived.has(s.id) ? 'row-flash' : ''}">
+          <td>${esc(wardName(s.ward_id))}</td>
+          <td>${esc(nameById[s.submitted_by] || '\u2014')}</td>
+          <td class="muted">${fmtDate(s.created_at)}</td>
+          <td>${lines.length}</td>
+          <td><span class="badge pending">${pendingCount}</span> ${oldestPending ? turnaroundDot(oldestPending) : ''}</td>
+          <td style="text-align:right;">${claimStatusCell(s)}</td>
+          <td><button class="btn small ghost" data-view="${s.id}">View</button></td>
+        </tr>`;
+      }).join('')}
+    </tbody></table>`;
+  }
+
+  function awaitingCheckHtml(list) {
+    if (!list.length) return `<div class="empty">Nothing awaiting a check right now.</div>`;
+    return `<table><thead><tr><th>Ward</th><th>Picked by</th><th>Picked</th><th></th></tr></thead><tbody>
+      ${list.map(s => {
+        const isOwnPick = s.picking_confirmed_by === profile.id;
+        return `<tr>
+          <td>${esc(wardName(s.ward_id))}</td>
+          <td>${esc(nameById[s.picking_confirmed_by] || '\u2014')}</td>
+          <td class="muted">${fmtDate(s.picking_confirmed_at)}</td>
+          <td style="text-align:right;">${isOwnPick
+            ? `<span class="muted" style="font-size:11.5px;">You picked this \u2014 someone else must check it</span>`
+            : `<button class="btn small magenta" data-check="${s.id}">Mark as checked</button>`}</td>
+        </tr>`;
+      }).join('')}
+    </tbody></table>`;
+  }
+
+  const adhocSessions = (sessionsData || []).filter(s => s.order_type !== 'topup');
+  const topupSessions = (sessionsData || []).filter(s => s.order_type === 'topup');
+
+  const awaitingCheckCard = canCheckPicking() ? `
+    <div class="card">
+      <h2>Awaiting check <span class="muted">(${(awaitingCheckData || []).length})</span></h2>
+      ${awaitingCheckHtml(awaitingCheckData || [])}
+    </div>` : '';
+
+  // Split screen specifically for the Bulk Assistant workflow \u2014 other
+  // processing roles get the same data as one combined list, since the
+  // adhoc/topup split matters most for whoever's triaging bulk volume.
+  if (profile.role === 'bulk_assistant') {
+    body.innerHTML = `
+      <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap;">
+        <div class="card" style="flex:1; min-width:320px;">
+          <h2>Adhoc queue <span class="muted">(${adhocSessions.length})</span></h2>
+          ${queueTableHtml(adhocSessions)}
+        </div>
+        <div class="card" style="flex:1; min-width:320px;">
+          <h2>Top-up queue <span class="muted">(${topupSessions.length})</span></h2>
+          ${queueTableHtml(topupSessions)}
+        </div>
+      </div>
+      ${awaitingCheckCard}`;
+  } else {
+    body.innerHTML = `<div class="card"><h2>Pending orders</h2>${queueTableHtml(sessionsData || [])}</div>${awaitingCheckCard}`;
+  }
+
+  body.querySelectorAll('[data-start], [data-continue], [data-view]').forEach(b => b.onclick = () => {
+    const id = b.dataset.start || b.dataset.continue || b.dataset.view;
+    openProcessingModal(id);
+  });
+  body.querySelectorAll('[data-check]').forEach(b => b.onclick = () => {
+    const id = b.dataset.check;
+    confirmDialog('Mark as checked', 'Confirm every item on this request has been checked against what was actually picked?', 'Mark checked', async () => {
+      const { error: checkErr } = await sb.rpc('mark_session_checked', { target_session: id });
+      if (checkErr) return toast(checkErr.message, true);
+      toast('Marked as checked.');
+      renderPending();
+    });
+  });
+}
+
+let seenSessionIds = new Set();
+let procModalHeartbeat = null;
+
+async function openProcessingModal(sessionId) {
+  openModal(`<div id="proc-modal-body">Loading\u2026</div>`, true);
+  await renderProcessingModalBody(sessionId);
+}
+
+async function renderProcessingModalBody(sessionId) {
+  const mount = document.getElementById('proc-modal-body');
+  if (!mount) return;
+
+  const { data: s, error: sErr } = await sb.from('order_sessions').select('*').eq('id', sessionId).single();
+  if (sErr || !s) { mount.innerHTML = `<div class="empty">${esc(sErr?.message || 'Not found')}</div><div class="actions"><button class="btn ghost" onclick="closeModal()">Close</button></div>`; return; }
+  const { data: allLines } = await sb.from('orders').select('*').eq('session_id', sessionId).order('medicine_name');
+  const lines = groupPartOrders((allLines || []).filter(o => !o.parent_order_id));
+  const { data: names } = await sb.rpc('staff_display_names');
+  const nameById = Object.fromEntries((names || []).map(n => [n.id, n.full_name]));
+
+  const dupWindowHours = parseFloat(systemSettings.duplicate_window_hours) || 48;
+  const pendingLines = (allLines || []).filter(o => !o.parent_order_id && o.status === 'pending');
+  const dupEligible = new Set();
+  if (pendingLines.length) {
+    await Promise.all(pendingLines.map(async (o) => {
+      const since = new Date(new Date(o.created_at).getTime() - dupWindowHours * 3600000).toISOString();
+      const until = new Date(new Date(o.created_at).getTime() + dupWindowHours * 3600000).toISOString();
+      const { data: matches } = await sb.from('orders').select('id')
+        .eq('ward_id', o.ward_id).eq('medicine_name', o.medicine_name)
+        .neq('id', o.id).gte('created_at', since).lte('created_at', until).limit(1);
+      if (matches && matches.length) dupEligible.add(o.id);
+    }));
+  }
+
+  const { data: wardRow } = await sb.from('wards').select('allow_stock_substitution').eq('id', s.ward_id).single();
+  const substitutionAllowed = !!wardRow?.allow_stock_substitution;
+  const substitutesByOrderId = {};
+  if (substitutionAllowed && pendingLines.length) {
+    const { data: catalogRows } = await sb.from('drug_catalog').select('id, medicine_name')
+      .in('medicine_name', [...new Set(pendingLines.map(o => o.medicine_name))]);
+    const catalogIdByName = Object.fromEntries((catalogRows || []).map(c => [c.medicine_name, c.id]));
+    const catalogIds = (catalogRows || []).map(c => c.id);
+    if (catalogIds.length) {
+      const { data: memberRows } = await sb.from('substitution_group_members').select('group_id, drug_catalog_id').in('drug_catalog_id', catalogIds);
+      const { data: allMembers } = memberRows?.length
+        ? await sb.from('substitution_group_members').select('group_id, drug_catalog_id').in('group_id', [...new Set(memberRows.map(m => m.group_id))])
+        : { data: [] };
+      const { data: allCatalog } = await sb.from('drug_catalog').select('id, medicine_name');
+      const catalogNameById = Object.fromEntries((allCatalog || []).map(c => [c.id, c.medicine_name]));
+      pendingLines.forEach(o => {
+        const myCatalogId = catalogIdByName[o.medicine_name];
+        if (!myCatalogId) return;
+        const myGroups = (memberRows || []).filter(m => m.drug_catalog_id === myCatalogId).map(m => m.group_id);
+        const alternatives = (allMembers || [])
+          .filter(m => myGroups.includes(m.group_id) && m.drug_catalog_id !== myCatalogId)
+          .map(m => ({ id: m.drug_catalog_id, name: catalogNameById[m.drug_catalog_id] }))
+          .filter(a => a.name);
+        if (alternatives.length) substitutesByOrderId[o.id] = alternatives;
+      });
+    }
+  }
+
+  const staleCutoffMs = Date.now() - 30 * 60000;
+  const claimStale = s.picking_claimed_by && new Date(s.picking_last_activity_at || 0).getTime() < staleCutoffMs;
+  const isMine = s.picking_claimed_by === profile.id && !claimStale;
+  const lockedByOther = s.picking_claimed_by && s.picking_claimed_by !== profile.id && !claimStale;
+  const nonChildOrders = (allLines || []).filter(o => !o.parent_order_id);
+  const allActioned = nonChildOrders.length > 0 && nonChildOrders.every(o => o.status !== 'pending');
+
+  const header = `<h3>${esc(wardName(s.ward_id))} \u2014 ${s.order_type === 'topup' ? 'Top-up' : 'Adhoc'} request</h3>`;
+
+  if (procModalHeartbeat) { clearInterval(procModalHeartbeat); procModalHeartbeat = null; }
+
+  // Already checked \u2014 fully done, read-only.
+  if (s.checked_at) {
+    mount.innerHTML = `${header}
+      <p class="muted">Picked by ${esc(nameById[s.picking_confirmed_by] || '\u2014')}, checked by ${esc(nameById[s.checked_by] || '\u2014')} on ${fmtDate(s.checked_at)}.</p>
+      <table><thead><tr><th>Medicine</th><th>Qty</th><th>Status</th></tr></thead><tbody>
+        ${lines.map(o => `<tr><td>${esc(o.medicine_name)}${fulfilledNote(o)}</td><td>${o.quantity}</td><td><span class="badge ${o._displayStatusClass || o.status}">${o._displayStatusText || statusLabel(o.status)}</span></td></tr>`).join('')}
+      </tbody></table>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Close</button></div>`;
+    return;
+  }
+
+  // Picked, awaiting an independent check.
+  if (s.picking_confirmed_at) {
+    const isOwnPick = s.picking_confirmed_by === profile.id;
+    mount.innerHTML = `${header}
+      <p class="muted">Picked by ${esc(nameById[s.picking_confirmed_by] || '\u2014')} on ${fmtDate(s.picking_confirmed_at)}. Awaiting an independent check.</p>
+      <table><thead><tr><th>Medicine</th><th>Qty</th><th>Status</th></tr></thead><tbody>
+        ${lines.map(o => `<tr><td>${esc(o.medicine_name)}${fulfilledNote(o)}</td><td>${o.quantity}</td><td><span class="badge ${o._displayStatusClass || o.status}">${o._displayStatusText || statusLabel(o.status)}</span></td></tr>`).join('')}
+      </tbody></table>
+      <div class="actions">
+        <button class="btn ghost" onclick="closeModal()">Close</button>
+        ${canCheckPicking() && !isOwnPick ? `<button class="btn magenta" id="proc-check-btn">Mark as checked</button>` : ''}
+        ${isOwnPick ? `<span class="muted" style="font-size:11.5px; align-self:center;">You picked this \u2014 someone else must check it</span>` : ''}
+      </div>`;
+    const checkBtn = document.getElementById('proc-check-btn');
+    if (checkBtn) checkBtn.onclick = async () => {
+      const { error: checkErr } = await sb.rpc('mark_session_checked', { target_session: sessionId });
+      if (checkErr) return toast(checkErr.message, true);
+      toast('Marked as checked.');
+      closeModal();
+      renderPending();
+    };
+    return;
+  }
+
+  // Locked by someone else.
+  if (lockedByOther) {
+    mount.innerHTML = `${header}
+      <p><span class="badge pending_approval">In progress</span> ${esc(nameById[s.picking_claimed_by] || 'Someone')} is currently processing this request.</p>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Close</button></div>`;
+    return;
+  }
+
+  // Unclaimed \u2014 offer to start.
+  if (!s.picking_claimed_by || claimStale) {
+    mount.innerHTML = `${header}
+      <table><thead><tr><th>Medicine</th><th>Qty</th></tr></thead><tbody>
+        ${nonChildOrders.map(o => `<tr><td>${esc(o.medicine_name)}</td><td>${o.quantity}</td></tr>`).join('')}
+      </tbody></table>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Close</button><button class="btn magenta" id="proc-start-btn">Start process</button></div>`;
+    document.getElementById('proc-start-btn').onclick = async () => {
+      const { data: acquired, error: claimErr } = await sb.rpc('acquire_processing_claim', { target_session: sessionId });
+      if (claimErr) return toast(claimErr.message, true);
+      if (!acquired) { toast('Someone else just started processing this request.', true); renderProcessingModalBody(sessionId); return; }
+      renderProcessingModalBody(sessionId);
+    };
+    return;
+  }
+
+  // isMine: full picking UI.
+  procModalHeartbeat = setInterval(() => { sb.rpc('heartbeat_processing_claim', { target_session: sessionId }); }, 5 * 60000);
+
+  mount.innerHTML = `${header}
+    <p style="color:var(--teal-deep); font-weight:600;">Process started by ${esc(profile.full_name)}</p>
+    <div style="margin-bottom:10px;"><button class="btn ghost small" id="proc-print-btn">Print picking list</button></div>
+    <table><thead><tr><th>Medicine</th><th>Qty</th><th>Status</th><th></th></tr></thead><tbody>
+      ${lines.map(o => `<tr id="proc-line-${o.id}">
+        <td>${esc(o.medicine_name)}${fulfilledNote(o)}</td>
+        <td>${o.quantity}</td>
+        <td><span class="badge ${o._displayStatusClass || o.status}">${o._displayStatusText || statusLabel(o.status)}</span></td>
+        <td style="text-align:right; white-space:nowrap;">
+          ${o.status === 'pending' ? `
+            <button class="btn small ghost" data-complete="${o.id}">Complete</button>
+            ${o.quantity > 1 ? `<button class="btn small ghost" data-part="${o.id}">Part order</button>` : ''}
+            ${dupEligible.has(o.id) ? `<button class="btn small ghost" data-dup="${o.id}">Mark duplicate</button>` : ''}
+            ${canMarkNonUrgent() ? `<button class="btn small ghost" data-nonurgent="${o.id}">Non-urgent</button>` : ''}
+            <button class="btn small danger" data-oos="${o.id}">Out of stock</button>
+            ${substitutesByOrderId[o.id] ? `<button class="btn small ghost" data-substitute="${o.id}">Send alternative</button>` : ''}
+          ` : ''}
+        </td>
+      </tr>`).join('')}
+    </tbody></table>
+    <div class="actions">
+      <button class="btn ghost" id="proc-stepaway-btn">Step away</button>
+      <button class="btn magenta" id="proc-confirm-btn" ${allActioned ? '' : 'disabled'}>Confirm</button>
+    </div>
+    ${!allActioned ? `<p class="muted" style="font-size:11.5px; margin-top:6px;">Every item needs a disposition before this can be confirmed.</p>` : ''}`;
+
+  document.getElementById('proc-print-btn').onclick = () => {
+    window.open(`picking-list.html?session=${sessionId}`, '_blank');
+  };
+  document.getElementById('proc-stepaway-btn').onclick = () => {
+    confirmDialog('Step away', 'Release this request so someone else can pick it up? Anything already actioned stays as-is.', 'Step away', async () => {
+      if (procModalHeartbeat) { clearInterval(procModalHeartbeat); procModalHeartbeat = null; }
+      await sb.rpc('release_processing_claim', { target_session: sessionId });
+      closeModal();
+      renderPending();
+    });
+  };
+  document.getElementById('proc-confirm-btn').onclick = async () => {
+    const { error: confirmErr } = await sb.rpc('confirm_picking', { target_session: sessionId });
+    if (confirmErr) return toast(confirmErr.message, true);
+    if (procModalHeartbeat) { clearInterval(procModalHeartbeat); procModalHeartbeat = null; }
+    toast('Picking confirmed.');
+    closeModal();
+    renderPending();
+  };
+  mount.querySelectorAll('[data-complete]').forEach(b => b.onclick = async () => {
+    const { error: e } = await sb.rpc('process_order', { target_order: b.dataset.complete, new_status: 'complete', reason: null });
+    if (e) return toast(e.message, true);
+    renderProcessingModalBody(sessionId);
+  });
+  mount.querySelectorAll('[data-oos]').forEach(b => b.onclick = async () => {
+    const { error: e } = await sb.rpc('process_order', { target_order: b.dataset.oos, new_status: 'out_of_stock', reason: null });
+    if (e) return toast(e.message, true);
+    renderProcessingModalBody(sessionId);
+  });
+  mount.querySelectorAll('[data-substitute]').forEach(b => b.onclick = () => {
+    const order = (allLines || []).find(o => o.id === b.dataset.substitute);
+    const alternatives = substitutesByOrderId[order.id] || [];
+    openModal(`<h3>Send an alternative</h3>
+      <p class="muted">Requested: ${esc(order.medicine_name)} \u00d7 ${order.quantity}</p>
+      <label>Send instead</label>
+      <select id="sub-choice">${alternatives.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
+      <label style="margin-top:8px;">Quantity sent</label>
+      <input type="number" min="1" id="sub-qty" value="${order.quantity}" />
+      <div class="modal-error" id="sub-error"></div>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="sub-confirm">Send this instead</button></div>`);
+    document.getElementById('sub-confirm').onclick = async () => {
+      const qty = Math.max(1, parseInt(document.getElementById('sub-qty').value, 10) || 1);
+      const substituteId = document.getElementById('sub-choice').value;
+      const { error: e } = await sb.rpc('substitute_and_complete_order', {
+        target_order: order.id, substitute_catalog_id: substituteId, sent_quantity: qty,
+      });
+      if (e) { document.getElementById('sub-error').textContent = e.message; return; }
+      toast('Alternative sent \u2014 recorded on the audit trail.');
+      openProcessingModal(sessionId);
+    };
+  });
+  mount.querySelectorAll('[data-dup]').forEach(b => b.onclick = () => {
+    const order = (allLines || []).find(o => o.id === b.dataset.dup);
+    openModal(`<h3>Mark as duplicate order</h3>
+      <p class="muted">${esc(order.medicine_name)} (${order.quantity}). This ward will see it flagged as a duplicate rather than fulfilled.</p>
+      <label>Reason (required)</label>
+      <input type="text" id="dup-reason" placeholder="e.g. Matches the order submitted 20 minutes earlier" />
+      <div class="modal-error" id="dup-reason-error"></div>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn danger" id="dup-confirm">Mark duplicate</button></div>`);
+    document.getElementById('dup-confirm').onclick = async () => {
+      const reason = document.getElementById('dup-reason').value.trim();
+      const errEl = document.getElementById('dup-reason-error');
+      if (!reason) { errEl.textContent = 'A reason is required.'; return; }
+      const { error: e } = await sb.rpc('process_order', { target_order: order.id, new_status: 'duplicate', reason });
+      if (e) { errEl.textContent = e.message; return; }
+      toast('Order marked duplicate.');
+      openProcessingModal(sessionId);
+    };
+  });
+  mount.querySelectorAll('[data-nonurgent]').forEach(b => b.onclick = () => {
+    const order = (allLines || []).find(o => o.id === b.dataset.nonurgent);
+    confirmDialog('Mark as non-urgent', `Mark ${esc(order.medicine_name)} (${order.quantity}) as non-urgent?`, 'Mark non-urgent', async () => {
+      const { error: e } = await sb.rpc('process_order', { target_order: order.id, new_status: 'non_urgent', reason: null });
+      if (e) return toast(e.message, true);
+      renderProcessingModalBody(sessionId);
+    });
+  });
+  mount.querySelectorAll('[data-part]').forEach(b => b.onclick = () => {
+    const order = (allLines || []).find(o => o.id === b.dataset.part);
+    openModal(`
+      <h3>Part order \u2014 ${esc(order.medicine_name)}</h3>
+      <p class="muted" style="margin-top:-6px;">Ordered ${order.quantity}. How many packs are you sending now?</p>
+      <label>Supplying now</label>
+      <input type="number" id="part-qty" min="1" max="${order.quantity - 1}" value="1" />
+      <div class="modal-error" id="part-qty-error"></div>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="part-confirm">Confirm part order</button></div>`);
+    document.getElementById('part-confirm').onclick = async () => {
+      const qty = parseInt(document.getElementById('part-qty').value, 10);
+      const errEl = document.getElementById('part-qty-error');
+      const { error: e } = await sb.rpc('create_part_supply', { parent_order: order.id, supplied_quantity: qty });
+      if (e) { errEl.textContent = e.message; return; }
+      closeModal();
+      openProcessingModal(sessionId);
+    };
+  });
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => !!pr.can_process });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderPending();
+  startAutoRefresh(renderPending, null, 12000);
+})();
+</script>
+</body>
+</html>

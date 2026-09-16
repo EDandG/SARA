@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Logs</title>
+<link rel="stylesheet" href="shared.css" />
+<script src="vendor/xlsx.full.min.js"></script>
+</head>
+<body data-page="logs.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>async function fetchAllOrdersEnriched() {
+  const [{ data: orderRows }] = await Promise.all([
+    sb.from('orders').select('*').order('created_at', { ascending: false }),
+  ]);
+  const { data: userRows } = await sb.from('profiles').select('id, full_name');
+  const nameById = Object.fromEntries((userRows || []).map(u => [u.id, u.full_name]));
+  return (orderRows || []).map(o => {
+    const ward = wards.find(w => w.id === o.ward_id);
+    return {
+      ...o,
+      _wardName: ward?.name || '',
+      _siteName: ward?.site_id ? siteName(ward.site_id) : '',
+      _orderedByName: nameById[o.ordered_by] || '',
+      _processedByName: nameById[o.processed_by] || '',
+    };
+  });
+}
+
+async function renderLogs() {
+  const body = document.getElementById('body');
+  const { count } = await sb.from('orders').select('*', { count: 'exact', head: true });
+  body.innerHTML = `
+    <div class="card">
+      <h2>Export logs</h2>
+      <p class="muted">Every order across every site and ward, as an Excel file.</p>
+      <label>Scope</label>
+      <select id="export-scope">
+        <option value="all">All sites</option>
+        ${sites.map(s => `<option value="${s.id}">${esc(s.name)} only</option>`).join('')}
+      </select>
+      <button class="btn magenta" id="export-logs-btn" style="margin-top:14px;">Download logs (Excel)</button>
+    </div>
+    <div class="card">
+      <h2>Clear all order logs</h2>
+      <p class="muted">Permanently deletes every order and every submission session across the whole system (${count ?? 0} order record${count === 1 ? '' : 's'} currently). This cannot be undone \u2014 export first if you need a record.</p>
+      <button class="btn danger" id="clear-logs-btn">Clear all order logs</button>
+    </div>`;
+
+  document.getElementById('export-logs-btn').onclick = async () => {
+    const scope = document.getElementById('export-scope').value;
+    let rows = await fetchAllOrdersEnriched();
+    let filenamePart = 'all-logs';
+    if (scope !== 'all') {
+      const scopedWardIds = new Set(wards.filter(w => w.site_id === scope).map(w => w.id));
+      rows = rows.filter(r => scopedWardIds.has(r.ward_id));
+      filenamePart = `${siteName(scope).toLowerCase().replace(/[^a-z0-9]+/g, '-')}-logs`;
+    }
+    if (!rows.length) return toast('Nothing to export.', true);
+    exportRowsToExcel(rows, `sara-${filenamePart}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  document.getElementById('clear-logs-btn').onclick = () => {
+    openModal(`<h3>Clear all order logs</h3>
+      <p>This permanently deletes every order and submission session, for every site and ward. This cannot be undone.</p>
+      <label>Re-enter your password to confirm</label>
+      <input type="password" id="clear-logs-pw" autocomplete="current-password" />
+      <div class="modal-error" id="clear-logs-pw-error"></div>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn danger" id="clear-logs-confirm">Clear everything</button></div>`);
+    document.getElementById('clear-logs-confirm').onclick = async () => {
+      const pw = document.getElementById('clear-logs-pw').value;
+      const errEl = document.getElementById('clear-logs-pw-error');
+      if (!pw) { errEl.textContent = 'Enter your password.'; return; }
+      const { data: { session } } = await sb.auth.getSession();
+      const { error: authErr } = await sb.auth.signInWithPassword({ email: session.user.email, password: pw });
+      if (authErr) { errEl.textContent = 'Incorrect password.'; return; }
+      const { error: e1 } = await sb.from('orders').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      if (e1) { errEl.textContent = e1.message; return; }
+      const { error: e2 } = await sb.from('order_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      if (e2) { errEl.textContent = e2.message; return; }
+      closeModal();
+      toast('All order logs cleared.');
+      renderLogs();
+    };
+  };
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => ['developer','superuser'].includes(pr.role) });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderLogs();
+})();
+</script>
+</body>
+</html>

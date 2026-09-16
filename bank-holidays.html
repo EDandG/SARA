@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Bank holidays</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="bank-holidays.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderBankHolidaysTab() {
+  const body = document.getElementById('body');
+  body.innerHTML = `
+    <div class="card">
+      <h2>Bank holidays</h2>
+      <p class="muted">Used for the green/amber turnaround calculation and business-day logic \u2014 an order placed on, or the day before, one of these is treated the same as a weekend.</p>
+      <div class="row">
+        <div><label>Date</label><input type="date" id="bh-date" /></div>
+        <div><label>Name</label><input type="text" id="bh-name" placeholder="e.g. Christmas Day" /></div>
+      </div>
+      <button class="btn magenta" style="margin-top:14px;" id="bh-add">Add</button>
+    </div>
+    <div class="card"><h2>Upcoming / recorded</h2><div id="bh-list">Loading\u2026</div></div>`;
+
+  document.getElementById('bh-add').onclick = async () => {
+    const holiday_date = document.getElementById('bh-date').value;
+    const name = document.getElementById('bh-name').value.trim();
+    if (!holiday_date) return toast('Pick a date.', true);
+    const { error } = await sb.from('bank_holidays').insert({ holiday_date, name: name || null });
+    if (error) return toast(error.message, true);
+    toast('Bank holiday added.');
+    document.getElementById('bh-date').value = '';
+    document.getElementById('bh-name').value = '';
+    const { data } = await sb.from('bank_holidays').select('holiday_date');
+    bankHolidays = (data || []).map(h => h.holiday_date);
+    renderBankHolidaysTab();
+  };
+
+  const { data, error } = await sb.from('bank_holidays').select('*').order('holiday_date');
+  const el = document.getElementById('bh-list');
+  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!data?.length) { el.innerHTML = `<div class="empty">No bank holidays recorded yet.</div>`; return; }
+  el.innerHTML = `<table><thead><tr><th>Date</th><th>Name</th><th></th></tr></thead><tbody>
+    ${data.map(h => `<tr>
+      <td>${new Date(h.holiday_date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</td>
+      <td class="muted">${esc(h.name || '\u2014')}</td>
+      <td style="text-align:right;"><button class="btn small danger" data-del="${h.holiday_date}">Remove</button></td>
+    </tr>`).join('')}
+  </tbody></table>`;
+  el.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    const { error } = await sb.from('bank_holidays').delete().eq('holiday_date', b.dataset.del);
+    if (error) return toast(error.message, true);
+    const { data: refreshed } = await sb.from('bank_holidays').select('holiday_date');
+    bankHolidays = (refreshed || []).map(h => h.holiday_date);
+    renderBankHolidaysTab();
+  });
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => ['developer','superuser'].includes(pr.role) });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderBankHolidaysTab();
+})();
+</script>
+</body>
+</html>

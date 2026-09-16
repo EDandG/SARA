@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Drug Catalog</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="drug-catalog.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+let catalogPreview = [];
+
+async function renderDrugCatalog() {
+  const body = document.getElementById('body');
+  body.innerHTML = `
+    ${isDeveloper() ? `
+    <div class="card">
+      <h2>Import from spreadsheet</h2>
+      <p class="muted">Upload a CSV or Excel export. Choose which column(s) hold the drug name and, optionally, the pack size — by column letter, same as Excel (A, B …). Pack size is descriptive only; each ward still sets its own max qty when adding a drug from here. Entries already in the catalog are left alone; new ones are added.</p>
+      <div class="row">
+        <div><label>Drug name column(s)</label><input type="text" id="col-name" value="A" placeholder="e.g. A or A,B" /></div>
+        <div><label>Pack size column <span class="muted" style="font-weight:400;">(optional)</span></label><input type="text" id="col-pack" placeholder="e.g. B" /></div>
+      </div>
+      <label style="margin-top:10px; display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="skip-header" style="width:auto;" />First row is a header row (skip it)</label>
+      <div class="file-drop" id="drop-zone" style="margin-top:12px;">Click to choose a CSV or Excel file, or drop one here</div>
+      <input type="file" id="csv-input" accept=".csv,.xlsx,.xls" class="hidden" />
+      <div id="csv-preview"></div>
+    </div>
+    <div class="card">
+      <h2>Add a drug</h2>
+      <div class="row">
+        <div><label>Medicine name</label><input type="text" id="add-drug-name" placeholder="e.g. Diazepam 5mg" /></div>
+        <div><label>Pack size <span class="muted" style="font-weight:400;">(optional)</span></label><input type="text" id="add-drug-pack" placeholder="e.g. 28 tablets" /></div>
+        <div style="align-self:flex-end;"><button class="btn magenta small" id="add-drug-btn">Add</button></div>
+      </div>
+    </div>` : ''}
+    <div class="card">
+      <h2>Sections</h2>
+      <p class="muted">Groupings like "Cold store", "Injections" or "TTO packs" — shown as subheadings on a ward's printed stocklist, so nurses know where to physically look. A drug can belong to more than one.</p>
+      <div class="row"><div><label>New section name</label><input type="text" id="new-section-name" placeholder="e.g. Cold store" /></div>
+        <div style="align-self:flex-end;"><button class="btn magenta small" id="add-section-btn">Add section</button></div></div>
+      <div id="section-list" style="margin-top:10px;">Loading\u2026</div>
+    </div>
+    <div class="card">
+      <h2>Substitution groups</h2>
+      <p class="muted">For when the exact pack requested is out of stock but a different pack size of the <b>same drug, same strength</b> is available \u2014 e.g. Diazepam 5mg 28-tablet pack and Diazepam 5mg 30-tablet pack. Group only genuinely interchangeable packs together; whoever's processing an order will only ever be offered what's explicitly linked here. Turned on per ward from the Wards page.</p>
+      <div class="row"><div><label>New group name</label><input type="text" id="new-subgroup-name" placeholder="e.g. Diazepam 5mg" /></div>
+        <div style="align-self:flex-end;"><button class="btn magenta small" id="add-subgroup-btn">Add group</button></div></div>
+      <div id="subgroup-list" style="margin-top:10px;">Loading\u2026</div>
+    </div>
+    <div class="card"><h2>Catalog</h2><div id="catalog-list">Loading\u2026</div></div>`;
+
+  if (isDeveloper()) {
+    document.getElementById('drop-zone').onclick = () => document.getElementById('csv-input').click();
+    document.getElementById('csv-input').onchange = handleCatalogCsv;
+    document.getElementById('drop-zone').ondragover = (e) => e.preventDefault();
+    document.getElementById('drop-zone').ondrop = (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) { document.getElementById('csv-input').files = e.dataTransfer.files; handleCatalogCsv(); } };
+
+    document.getElementById('add-drug-btn').onclick = async () => {
+      const name = document.getElementById('add-drug-name').value.trim();
+      const packSize = document.getElementById('add-drug-pack').value.trim();
+      if (!name) return toast('Enter a medicine name.', true);
+      const { error } = await sb.from('drug_catalog').insert({ medicine_name: name, pack_size: packSize || null, created_by: profile.id });
+      if (error) return toast(error.message.includes('duplicate') ? 'Already in the catalog.' : error.message, true);
+      document.getElementById('add-drug-name').value = '';
+      document.getElementById('add-drug-pack').value = '';
+      toast(`${name} added to the catalog.`);
+      loadCatalogList();
+    };
+  }
+
+  document.getElementById('add-section-btn').onclick = async () => {
+    const name = document.getElementById('new-section-name').value.trim();
+    if (!name) return toast('Enter a section name.', true);
+    const { error } = await sb.from('drug_sections').insert({ name, created_by: profile.id });
+    if (error) return toast(error.message.includes('duplicate') ? 'That section already exists.' : error.message, true);
+    document.getElementById('new-section-name').value = '';
+    toast('Section added.');
+    loadSectionList();
+    loadCatalogList();
+  };
+
+  document.getElementById('add-subgroup-btn').onclick = async () => {
+    const name = document.getElementById('new-subgroup-name').value.trim();
+    if (!name) return toast('Enter a group name.', true);
+    const { error } = await sb.from('substitution_groups').insert({ name, created_by: profile.id });
+    if (error) return toast(error.message, true);
+    document.getElementById('new-subgroup-name').value = '';
+    toast('Substitution group added.');
+    loadSubstitutionGroups();
+  };
+
+  await loadSectionList();
+  await loadSubstitutionGroups();
+  await loadCatalogList();
+}
+
+// A soft, non-blocking check — not a hard rule, since drug names
+// don't follow one consistent format, but enough to catch an obvious
+// mistake before it goes live for whoever's processing orders.
+function firstWord(name) {
+  return (name || '').trim().split(/\s+/)[0]?.toLowerCase() || '';
+}
+
+async function loadSubstitutionGroups() {
+  const el = document.getElementById('subgroup-list');
+  const { data: groups, error } = await sb.from('substitution_groups').select('*').order('name');
+  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!groups?.length) { el.innerHTML = `<div class="empty">No substitution groups yet \u2014 add one above.</div>`; return; }
+
+  const { data: catalogRows } = await sb.from('drug_catalog').select('id, medicine_name').order('medicine_name');
+  const { data: memberRows } = await sb.from('substitution_group_members').select('*');
+  const catalogById = Object.fromEntries((catalogRows || []).map(c => [c.id, c]));
+
+  el.innerHTML = groups.map(g => {
+    const memberIds = (memberRows || []).filter(m => m.group_id === g.id).map(m => m.drug_catalog_id);
+    const members = memberIds.map(id => catalogById[id]).filter(Boolean);
+    const availableOptions = (catalogRows || []).filter(c => !memberIds.includes(c.id));
+    return `<div style="border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong>${esc(g.name)}</strong>
+        <button class="btn small danger" data-delete-group="${g.id}" data-name="${esc(g.name)}">Delete group</button>
+      </div>
+      <div style="margin-top:8px;">
+        ${members.length ? members.map(m => `<span class="capsule" style="margin-right:6px;">${esc(m.medicine_name)} <button data-remove-member="${g.id}::${m.id}" style="border:none; background:none; cursor:pointer; color:inherit; font-weight:700; padding:0 0 0 4px;">\u00d7</button></span>`).join('') : '<span class="muted">No drugs in this group yet.</span>'}
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <div><select class="subgroup-add-select" data-group="${g.id}"><option value="">Add a drug\u2026</option>${availableOptions.map(c => `<option value="${c.id}">${esc(c.medicine_name)}</option>`).join('')}</select></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  el.querySelectorAll('[data-delete-group]').forEach(b => b.onclick = () => {
+    confirmDialog('Delete this substitution group?', `Drugs in "${esc(b.dataset.name)}" will no longer be offered as alternatives for each other.`, 'Delete', async () => {
+      const { error: e } = await sb.from('substitution_groups').delete().eq('id', b.dataset.deleteGroup);
+      if (e) return toast(e.message, true);
+      toast('Substitution group deleted.');
+      loadSubstitutionGroups();
+    }, true);
+  });
+
+  el.querySelectorAll('[data-remove-member]').forEach(b => b.onclick = async () => {
+    const [groupId, drugId] = b.dataset.removeMember.split('::');
+    const { error: e } = await sb.from('substitution_group_members').delete().eq('group_id', groupId).eq('drug_catalog_id', drugId);
+    if (e) return toast(e.message, true);
+    loadSubstitutionGroups();
+  });
+
+  el.querySelectorAll('.subgroup-add-select').forEach(sel => sel.onchange = async () => {
+    const drugId = sel.value;
+    if (!drugId) return;
+    const groupId = sel.dataset.group;
+    const chosenName = sel.options[sel.selectedIndex].text;
+    const memberIds = (memberRows || []).filter(m => m.group_id === groupId).map(m => m.drug_catalog_id);
+    const existingNames = memberIds.map(id => catalogById[id]?.medicine_name).filter(Boolean);
+    const mismatched = existingNames.length && !existingNames.some(n => firstWord(n) === firstWord(chosenName));
+
+    const doAdd = async () => {
+      const { error: e } = await sb.from('substitution_group_members').insert({ group_id: groupId, drug_catalog_id: drugId });
+      if (e) return toast(e.message, true);
+      toast('Added to group.');
+      loadSubstitutionGroups();
+    };
+    if (mismatched) {
+      confirmDialog('Same drug?', `"${esc(chosenName)}" doesn\u2019t look like the same drug as what\u2019s already in this group (${esc(existingNames.join(', '))}). Only add it if it\u2019s genuinely the same drug and strength, just a different pack.`, 'Add anyway', doAdd, true);
+    } else {
+      await doAdd();
+    }
+  });
+}
+
+async function loadSectionList() {
+  const el = document.getElementById('section-list');
+  const { data, error } = await sb.from('drug_sections').select('*').order('name');
+  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!data?.length) { el.innerHTML = `<div class="empty">No sections yet \u2014 add one above.</div>`; return; }
+  el.innerHTML = data.map(s => `<span class="capsule" style="margin-right:6px;">${esc(s.name)} <button data-remove-section="${s.id}" data-name="${esc(s.name)}" style="border:none; background:none; cursor:pointer; color:inherit; font-weight:700; padding:0 0 0 4px;">\u00d7</button></span>`).join('');
+  el.querySelectorAll('[data-remove-section]').forEach(b => b.onclick = () => {
+    confirmDialog('Remove this section?', `"${esc(b.dataset.name)}" will no longer group any drug on a printed stocklist. This doesn't remove the drugs themselves from the catalog.`, 'Remove', async () => {
+      const { error } = await sb.from('drug_sections').delete().eq('id', b.dataset.removeSection);
+      if (error) return toast(error.message, true);
+      toast('Section removed.');
+      loadSectionList();
+      loadCatalogList();
+    }, true);
+  });
+}
+
+async function handleCatalogCsv() {
+  const file = document.getElementById('csv-input').files[0];
+  if (!file) return;
+
+  let rows;
+  try {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  } catch (e) {
+    toast('Could not read that file: ' + e.message, true);
+    return;
+  }
+  if (document.getElementById('skip-header').checked) rows = rows.slice(1);
+
+  const nameCols = document.getElementById('col-name').value.split(',').map(colToIndex).filter(i => i >= 0);
+  const packColLetter = document.getElementById('col-pack').value.trim();
+  const packCol = packColLetter ? colToIndex(packColLetter) : -1;
+  if (!nameCols.length) { toast('Enter at least one drug name column (e.g. A or A,B).', true); return; }
+
+  const seen = new Set();
+  catalogPreview = [];
+  for (const row of rows) {
+    const nameParts = nameCols.map(idx => String(row[idx] ?? '').trim()).filter(Boolean);
+    const name = nameParts.join(' ').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const pack = packCol >= 0 ? String(row[packCol] ?? '').trim() : '';
+    catalogPreview.push({ medicine_name: name, pack_size: pack || null });
+  }
+
+  const { data: existing } = await sb.from('drug_catalog').select('medicine_name');
+  const existingNames = new Set((existing || []).map(r => r.medicine_name));
+  const newOnes = catalogPreview.filter(i => !existingNames.has(i.medicine_name));
+  const alreadyThere = catalogPreview.length - newOnes.length;
+
+  const preview = document.getElementById('csv-preview');
+  if (!catalogPreview.length) { preview.innerHTML = `<p class="muted" style="margin-top:12px;">No valid rows found \u2014 check the column letters and try again.</p>`; return; }
+  preview.innerHTML = `
+    <p class="muted" style="margin-top:12px;">${catalogPreview.length} row(s) parsed \u2014 ${newOnes.length} new, ${alreadyThere} already in the catalog (skipped on import).</p>
+    <button class="btn magenta" id="confirm-catalog-import" style="margin-top:8px;">Import ${newOnes.length} new drug(s)</button>`;
+
+  document.getElementById('confirm-catalog-import').onclick = async () => {
+    if (!newOnes.length) return;
+    const { error } = await sb.from('drug_catalog').insert(newOnes.map(i => ({ ...i, created_by: profile.id })));
+    if (error) return toast(error.message, true);
+    toast(`${newOnes.length} drug(s) imported.`);
+    document.getElementById('csv-input').value = '';
+    catalogPreview = [];
+    preview.innerHTML = '';
+    loadCatalogList();
+  };
+}
+
+async function loadCatalogList() {
+  const el = document.getElementById('catalog-list');
+  const { data, error } = await sb.from('drug_catalog').select('*').order('medicine_name');
+  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!data?.length) { el.innerHTML = `<div class="empty">Catalog is empty \u2014 import a spreadsheet or add drugs above.</div>`; return; }
+
+  const { data: sections } = await sb.from('drug_sections').select('*').order('name');
+  const { data: links } = await sb.from('drug_catalog_sections').select('*');
+  const sectionsByDrug = {};
+  (links || []).forEach(l => { (sectionsByDrug[l.drug_catalog_id] ??= new Set()).add(l.section_id); });
+
+  el.innerHTML = `<table><thead><tr><th>Medicine</th><th class="muted">Pack size</th><th>Sections</th>${isDeveloper() ? '<th></th>' : ''}</tr></thead><tbody>
+    ${data.map(d => `<tr>
+      <td>${esc(d.medicine_name)}</td>
+      <td class="muted">${esc(d.pack_size || '\u2014')}</td>
+      <td>${(sections || []).length ? (sections || []).map(s => `<label style="display:inline-flex; align-items:center; gap:4px; font-weight:400; margin-right:10px;"><input type="checkbox" class="section-tag-cb" data-drug="${d.id}" data-section="${s.id}" ${sectionsByDrug[d.id]?.has(s.id) ? 'checked' : ''} style="width:auto;" />${esc(s.name)}</label>`).join('') : '<span class="muted">No sections defined yet</span>'}</td>
+      ${isDeveloper() ? `<td style="text-align:right;"><button class="btn small danger" data-delete="${d.id}" data-name="${esc(d.medicine_name)}">Remove</button></td>` : ''}
+    </tr>`).join('')}
+  </tbody></table>`;
+
+  el.querySelectorAll('.section-tag-cb').forEach(cb => cb.onchange = async () => {
+    if (cb.checked) {
+      const { error: e } = await sb.from('drug_catalog_sections').insert({ drug_catalog_id: cb.dataset.drug, section_id: cb.dataset.section });
+      if (e) { toast(e.message, true); cb.checked = false; return; }
+    } else {
+      const { error: e } = await sb.from('drug_catalog_sections').delete().eq('drug_catalog_id', cb.dataset.drug).eq('section_id', cb.dataset.section);
+      if (e) { toast(e.message, true); cb.checked = true; return; }
+    }
+  });
+
+  if (isDeveloper()) {
+    el.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => {
+      confirmDialog('Remove from catalog?', `"${esc(b.dataset.name)}" will no longer appear as an option when building ward stocklists. Wards that already stock it are unaffected.`, 'Remove', async () => {
+        const { error: e } = await sb.from('drug_catalog').delete().eq('id', b.dataset.delete);
+        if (e) return toast(e.message, true);
+        toast('Removed from catalog.');
+        loadCatalogList();
+      }, true);
+    });
+  }
+}
+
+(async () => {
+  const p = await requireAuth({ require: () => isSuperuser() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderDrugCatalog();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Picking List</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="picking-list.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<style>
+  /* Print-specific layout — deliberately plain (no card shadows,
+     rounded corners or brand chrome) since this is a physical
+     document someone marks up by hand, not an on-screen surface. */
+  .picking-sheet { background: #fff; border: 1px solid var(--border-soft); border-radius: 10px; padding: 28px 32px; }
+  .picking-sheet h1 { font-size: 19px; margin: 0 0 2px; color: var(--navy); }
+  .picking-sheet .meta { display: flex; flex-wrap: wrap; gap: 24px; margin: 14px 0 20px; font-size: 13px; color: var(--text-dim); }
+  .picking-sheet .meta strong { color: var(--text); font-weight: 600; }
+  .picking-sheet table { width: 100%; border-collapse: collapse; }
+  .picking-sheet th { text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-dim); padding: 8px 10px; border-bottom: 2px solid var(--border); }
+  .picking-sheet td { padding: 10px; border-bottom: 1px solid var(--border-soft); font-size: 13.5px; vertical-align: middle; }
+  .mark-box { display: inline-block; width: 16px; height: 16px; border: 1.5px solid var(--text-dim); border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+  .mark-cell { white-space: nowrap; }
+  .sign-off { margin-top: 36px; display: flex; gap: 48px; flex-wrap: wrap; }
+  .sign-off .field { flex: 1; min-width: 200px; }
+  .sign-off .field .line { border-bottom: 1px solid var(--text); height: 34px; }
+  .sign-off .field .label { font-size: 11.5px; color: var(--text-dim); margin-top: 4px; }
+  @media print {
+    header.topbar, #page-nav, #banner-root, .no-print { display: none !important; }
+    main { max-width: none; padding: 0; margin: 0; }
+    body { background: #fff; }
+    .picking-sheet { border: none; border-radius: 0; padding: 0; box-shadow: none; }
+  }
+</style>
+<script>
+async function renderPickingList() {
+  const body = document.getElementById('body');
+  const sessionId = new URLSearchParams(window.location.search).get('session');
+  if (!sessionId) { body.innerHTML = `<div class="empty">No request specified.</div>`; return; }
+
+  const { data: s, error: sErr } = await sb.from('order_sessions').select('*').eq('id', sessionId).single();
+  if (sErr || !s) { body.innerHTML = `<div class="empty">${esc(sErr?.message || 'Not found')}</div>`; return; }
+  const { data: lines } = await sb.from('orders').select('*').eq('session_id', sessionId).is('parent_order_id', null).order('medicine_name');
+
+  body.innerHTML = `
+    <div class="card no-print">
+      <p class="muted" style="margin-top:0;">This opens your browser's print dialog automatically. If it doesn't, use the button below.</p>
+      <button class="btn magenta" id="print-btn">Print</button>
+    </div>
+    <div class="picking-sheet">
+      <h1>Picking list</h1>
+      <div class="meta">
+        <div><strong>${esc(wardName(s.ward_id))}</strong></div>
+        <div>${s.order_type === 'topup' ? 'Top-up' : 'Adhoc'} request</div>
+        <div>Submitted ${fmtDate(s.created_at)}</div>
+        <div>Picked by: <strong>${esc(profile.full_name)}</strong></div>
+        <div>Printed: ${fmtDate(new Date().toISOString())}</div>
+      </div>
+      <table>
+        <thead><tr><th>Medicine</th><th>Qty</th><th>To follow</th><th>Part order</th><th>Out of stock</th></tr></thead>
+        <tbody>
+          ${(lines || []).map(o => `<tr>
+            <td>${esc(o.medicine_name)}</td>
+            <td>${o.quantity}</td>
+            <td class="mark-cell"><span class="mark-box"></span></td>
+            <td class="mark-cell"><span class="mark-box"></span></td>
+            <td class="mark-cell"><span class="mark-box"></span></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <div class="sign-off">
+        <div class="field"><div class="line"></div><div class="label">Picked by (print name): ${esc(profile.full_name)}</div></div>
+        <div class="field"><div class="line"></div><div class="label">Checked by (print name)</div></div>
+        <div class="field"><div class="line"></div><div class="label">Checked by (signature)</div></div>
+        <div class="field"><div class="line"></div><div class="label">Date</div></div>
+      </div>
+    </div>`;
+
+  document.getElementById('print-btn').onclick = () => window.print();
+
+  // Record the print once, best-effort — doesn't block showing the sheet.
+  sb.rpc('mark_picking_list_printed', { target_session: sessionId });
+
+  setTimeout(() => window.print(), 400);
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => !!pr.can_process });
+  if (!p) return;
+  document.getElementById('main').innerHTML = "<div id='body'></div>";
+  renderPickingList();
+})();
+</script></script>
+</body>
+</html>

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — BI Insights</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="bi-insights.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/chart.umd.min.js"></script>
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+let biSeasonalChart = null;
+const SEASON_LABEL = { 0: "Winter", 1: "Winter", 2: "Spring", 3: "Spring", 4: "Spring", 5: "Summer", 6: "Summer", 7: "Summer", 8: "Autumn", 9: "Autumn", 10: "Autumn", 11: "Winter" };
+const MONTH_LABEL = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+async function renderBiInsights() {
+  const body = document.getElementById("body");
+  const sortedWards = [...wards].filter(w => w.active !== false).sort((a, b) => a.name.localeCompare(b.name));
+  body.innerHTML = `
+    <div class="card">
+      <h2>Most-ordered items — last 3 months</h2>
+      <p class="muted">Top 20 by frequency, per ward, split by order type. This is the same data source used for predictive top-up suggestions.</p>
+      <label>Ward</label>
+      <select id="bi-ward">${sortedWards.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join("")}</select>
+      <div class="row" style="margin-top:14px; align-items:flex-start;">
+        <div style="flex:1;"><h3 style="margin:0 0 8px;">Top-up</h3><div id="bi-topup-list">Loading…</div></div>
+        <div style="flex:1;"><h3 style="margin:0 0 8px;">Adhoc</h3><div id="bi-adhoc-list">Loading…</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Seasonal usage pattern</h2>
+      <p class="muted">Order volume by calendar month, summed across every year of data available — the more months this system has been live, the more this reflects a genuine seasonal pattern rather than a single snapshot.</p>
+      <div class="row">
+        <div><label>Ward</label><select id="bi-season-ward">${sortedWards.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join("")}</select></div>
+        <div><label>Medicine</label><input type="text" id="bi-season-drug" placeholder="Start typing a medicine name…" list="bi-season-drug-list" /><datalist id="bi-season-drug-list"></datalist></div>
+      </div>
+      <div id="bi-season-body" style="margin-top:14px;"><div class="empty">Choose a ward and medicine to see its seasonal pattern.</div></div>
+    </div>
+    <div class="card">
+      <h2>Who's ordering this</h2>
+      <p class="muted">For the ward and medicine picked above — how many were requested and how many actually supplied, broken down by whoever submitted each order. Useful for checking a suspected pattern on a specific drug.</p>
+      <div id="bi-investigate-body"><div class="empty">Choose a ward and medicine above to see this.</div></div>
+    </div>`;
+
+  const wardEl = document.getElementById("bi-ward");
+  wardEl.onchange = () => loadFrequencyLists(wardEl.value);
+  if (sortedWards.length) loadFrequencyLists(sortedWards[0].id);
+
+  const seasonWardEl = document.getElementById("bi-season-ward");
+  const seasonDrugEl = document.getElementById("bi-season-drug");
+  async function refreshDrugOptions() {
+    const { data } = await sb.from("blist_items").select("medicine_name").eq("ward_id", seasonWardEl.value).order("medicine_name");
+    document.getElementById("bi-season-drug-list").innerHTML = (data || []).map(i => `<option value="${esc(i.medicine_name)}"></option>`).join("");
+  }
+  seasonWardEl.onchange = refreshDrugOptions;
+  if (sortedWards.length) refreshDrugOptions();
+  seasonDrugEl.onchange = () => {
+    if (seasonDrugEl.value.trim()) {
+      loadSeasonalPattern(seasonWardEl.value, seasonDrugEl.value.trim());
+      loadOrdererBreakdown(seasonWardEl.value, seasonDrugEl.value.trim());
+    }
+  };
+}
+
+async function loadOrdererBreakdown(wardId, drugName) {
+  const el = document.getElementById("bi-investigate-body");
+  el.innerHTML = "Loading…";
+  const { data, error } = await sb.from("orders").select("ordered_by, quantity, status, supplied_qty, parent_order_id, created_at")
+    .eq("ward_id", wardId).eq("medicine_name", drugName);
+  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!data?.length) { el.innerHTML = `<div class="empty">No order history for this ward and medicine.</div>`; return; }
+
+  const byOrderer = calcRequestedSupplied(data, { byOrderer: true });
+  const timesById = {};
+  data.filter(o => !o.parent_order_id).forEach(o => { timesById[o.ordered_by] = (timesById[o.ordered_by] || 0) + 1; });
+  const { data: names } = await sb.rpc("staff_display_names");
+  const nameById = Object.fromEntries((names || []).map(n => [n.id, n.full_name]));
+
+  const rows = Object.entries(byOrderer).sort((a, b) => b[1].requested - a[1].requested);
+  el.innerHTML = `<table><thead><tr><th>Ordered by</th><th>Times</th><th>Requested</th><th>Supplied</th></tr></thead><tbody>
+    ${rows.map(([uid, t]) => `<tr><td>${esc(nameById[uid] || '\u2014')}</td><td>${timesById[uid] || 0}</td><td>${t.requested}</td><td>${t.supplied}</td></tr>`).join("")}
+  </tbody></table>`;
+}
+
+async function loadFrequencyLists(wardId) {
+  const topupEl = document.getElementById("bi-topup-list");
+  const adhocEl = document.getElementById("bi-adhoc-list");
+  topupEl.innerHTML = "Loading…";
+  adhocEl.innerHTML = "Loading…";
+
+  const since = new Date(); since.setDate(since.getDate() - 90);
+  const { data, error } = await sb.from("orders").select("medicine_name, order_type, quantity, status, supplied_qty, parent_order_id")
+    .eq("ward_id", wardId).in("order_type", ["adhoc", "topup"]).gte("created_at", since.toISOString());
+  if (error) { topupEl.innerHTML = adhocEl.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+
+  function topList(type) {
+    // A part-supply's remainder child row carries its parent's
+    // order_type already (see create_part_supply), so filtering by
+    // type here still keeps each parent+child pair together.
+    const rows = (data || []).filter(o => o.order_type === type);
+    const totals = calcRequestedSupplied(rows);
+    return Object.entries(totals).sort((a, b) => b[1].requested - a[1].requested).slice(0, 20);
+  }
+  function renderList(el, list) {
+    if (!list.length) { el.innerHTML = `<div class="empty">No orders of this type in the last 3 months.</div>`; return; }
+    el.innerHTML = `<table><thead><tr><th>Medicine</th><th>Requested</th><th>Supplied</th></tr></thead><tbody>
+      ${list.map(([name, t]) => `<tr><td>${esc(name)}</td><td>${t.requested}</td><td>${t.supplied}</td></tr>`).join("")}
+    </tbody></table>`;
+  }
+  renderList(topupEl, topList("topup"));
+  renderList(adhocEl, topList("adhoc"));
+}
+
+async function loadSeasonalPattern(wardId, drugName) {
+  const el = document.getElementById("bi-season-body");
+  el.innerHTML = "Loading…";
+  const { data, error } = await sb.from("orders").select("created_at")
+    .eq("ward_id", wardId).eq("medicine_name", drugName);
+  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!data?.length) { el.innerHTML = `<div class="empty">No order history for this ward and medicine.</div>`; return; }
+
+  const monthCounts = new Array(12).fill(0);
+  const seasonCounts = { Winter: 0, Spring: 0, Summer: 0, Autumn: 0 };
+  let earliestYear = null, latestYear = null;
+  data.forEach(o => {
+    const d = new Date(o.created_at);
+    monthCounts[d.getMonth()]++;
+    seasonCounts[SEASON_LABEL[d.getMonth()]]++;
+    const y = d.getFullYear();
+    if (earliestYear === null || y < earliestYear) earliestYear = y;
+    if (latestYear === null || y > latestYear) latestYear = y;
+  });
+  const spanNote = earliestYear === latestYear
+    ? `All data is from ${earliestYear} — seasonal comparison will become more meaningful as more months accumulate.`
+    : `Data spans ${earliestYear}–${latestYear}.`;
+
+  el.innerHTML = `
+    <p class="muted" style="margin-top:0;">${data.length} order${data.length > 1 ? "s" : ""} total. ${spanNote}</p>
+    <div class="row" style="margin-bottom:14px;">
+      ${Object.entries(seasonCounts).map(([season, count]) => `
+        <div class="card" style="text-align:center; flex:1; box-shadow:none; border:1px solid var(--border-soft);">
+          <div class="muted" style="font-size:11px; text-transform:uppercase; letter-spacing:.04em;">${season}</div>
+          <div style="font-size:22px; font-weight:700; color:var(--navy); margin-top:4px;">${count}</div>
+        </div>`).join("")}
+    </div>
+    <canvas id="bi-season-chart" height="90"></canvas>`;
+
+  biSeasonalChart?.destroy();
+  biSeasonalChart = new Chart(document.getElementById("bi-season-chart"), {
+    type: "bar",
+    data: { labels: MONTH_LABEL, datasets: [{ label: "Orders", backgroundColor: "#229A82", data: monthCounts }] },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } },
+  });
+}
+
+(async () => {
+  const p = await requireAuth({ require: () => canViewBi() });
+  if (!p) return;
+  document.getElementById("main").innerHTML = "<div id='body'></div>";
+  renderBiInsights();
+})();
+</script>
+</body></script>
+</body></script>
+</body>
+</html>

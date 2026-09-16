@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Out of stock</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="out-of-stock.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderOutOfStock() {
+  const body = document.getElementById('body');
+  const { data, error } = await sb.from('orders').select('*').in('status', ['out_of_stock', 'non_urgent']).order('created_at');
+  if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  const nameById = await fetchNameMap(data || []);
+  body.innerHTML = `<div class="card"><h2>Out of stock</h2>
+    <p class="muted">Click an item once it's ready to mark it supplied and record the date/time. Includes items marked out of stock, part-order remainders, and items marked non-urgent.</p>
+    ${!data?.length ? `<div class="empty">Nothing currently sitting here.</div>` : `
+    <table><thead><tr><th>Ward</th><th>Medicine</th><th>Qty</th><th></th></tr></thead><tbody>
+      ${data.map(o => `<tr><td>${esc(wardName(o.ward_id))}</td><td>${esc(o.medicine_name)}
+        ${o.parent_order_id ? '<span class="badge part_supplied">To follow</span>' : ''}
+        ${o.status === 'non_urgent' ? '<span class="badge non_urgent">Non-urgent</span>' : ''}
+        ${attribution('Marked by', nameById[o.processed_by], o.processed_at)}</td><td>${o.quantity}</td>
+        <td style="text-align:right;"><button class="btn small magenta" data-supplied="${o.id}">Mark supplied</button></td></tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+  body.querySelectorAll('[data-supplied]').forEach(b => b.onclick = async () => {
+    const { error } = await sb.rpc('mark_supplied', { target_order: b.dataset.supplied });
+    if (error) return toast(error.message, true);
+    toast('Marked supplied.');
+    renderOutOfStock();
+  });
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => !!pr.can_process });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderOutOfStock();
+})();
+</script>
+</body>
+</html>

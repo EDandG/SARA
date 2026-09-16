@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Top-up days</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="topup-days.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderTopupDaysTab() {
+  const body = document.getElementById('body');
+  await refreshSitesWards();
+  body.innerHTML = `<div class="card"><h2>Ward top-up days</h2>
+    ${!wards.length ? `<div class="empty">No wards yet.</div>` : `
+    <table><thead><tr><th>Ward</th><th>Top-up days</th><th></th></tr></thead><tbody>
+      ${wards.map(w => `<tr>
+        <td>${esc(w.name)}</td>
+        <td class="muted">${(w.topup_days || []).length ? esc((w.topup_days || []).join(', ')) : '\u2014'}</td>
+        <td style="text-align:right;"><button class="btn small ghost" data-edit="${w.id}">Edit</button></td>
+      </tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+  body.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => openTopupModal(wards.find(w => w.id === b.dataset.edit), renderTopupDaysTab));
+}
+
+(async () => {
+  const p = await requireAuth({ require: () => isSuperuser() || isAdminRole() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderTopupDaysTab();
+})();
+</script>
+</body>
+</html>

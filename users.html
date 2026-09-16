@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Users</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="users.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>async function renderUsers() {
+  const body = document.getElementById('body');
+
+  if (isWardManager() && !isAdminRole() && !isSuperuser()) return renderWardManagerNurseList();
+
+  let scopeSiteIds = [];
+  if (isAdminRole()) {
+    const { data: mySites } = await sb.from('user_sites').select('site_id').eq('user_id', profile.id);
+    scopeSiteIds = (mySites || []).map(s => s.site_id);
+  }
+  const wardsForForm = (isAdminRole()) ? wards.filter(w => scopeSiteIds.includes(w.site_id)) : wards;
+
+  const { data: titleRows } = await sb.from('titles').select('name').order('name');
+  let roleOptions = (titleRows || []).map(t => t.name);
+  if (isDeveloper()) roleOptions = [...roleOptions, 'governance', 'superuser'];
+  else if (isSuperuser()) roleOptions = [...roleOptions, 'governance'];
+  // A title is just a label now — it grants nothing on its own, so
+  // every tickbox below is offered regardless of which one is chosen.
+  // The backend enforces who can actually be seen or managed; this is
+  // only a display narrowing on top of that.
+  const visibleFilter = isSuperuser() ? () => true : (u) => !['developer', 'superuser', 'governance'].includes(u.role);
+
+  body.innerHTML = `
+    <div class="card">
+      <h2>Create login</h2>
+      <div class="row">
+        <div><label>Full name</label><input type="text" id="nu-name" /></div>
+        <div><label>User ID <span class="muted" id="nu-userid-status" style="font-weight:400;"></span></label><input type="text" id="nu-userid" autocapitalize="off" spellcheck="false" placeholder="e.g. jsmith" /></div>
+        <div><label>Temporary passcode</label>
+          <div style="display:flex; gap:6px;">
+            <input type="password" id="nu-pass" style="flex:1;" />
+            <button type="button" class="btn ghost small" id="nu-pass-toggle" style="white-space:nowrap;">Show</button>
+          </div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:6px; font-size:11.5px;">New logins start inactive and must change their passcode on first login — activate them from the list below once set up.</p>
+      <div class="row" style="margin-top:10px;">
+        <div><label>Title <span class="muted" style="font-weight:400;">(a label only — tick whatever this account actually needs below)</span></label><select id="nu-role">${roleOptions.map(r => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select></div>
+      </div>
+      <div id="nu-clinical-fields"></div>
+      <div id="nu-site-fields"></div>
+      <button class="btn magenta" style="margin-top:14px;" id="create-user-btn">Create login</button>
+    </div>
+    <div class="card"><h2>Logins</h2><div id="user-list">Loading\u2026</div></div>`;
+
+  const formSites = sites.filter(s => wardsForForm.some(w => w.site_id === s.id));
+  let formCheckedWards = new Set();
+
+  function renderRoleDependentFields() {
+    const clinicalWrap = document.getElementById('nu-clinical-fields');
+    const siteWrap = document.getElementById('nu-site-fields');
+
+    clinicalWrap.innerHTML = `
+      <div class="row" style="margin-top:10px; flex-wrap:wrap;">
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-order" style="width:auto;"> Order stock</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-process" style="width:auto;"> Process stock</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-check-picking" style="width:auto;"> Can check picked requests</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-nonurgent" style="width:auto;"> Can mark non-urgent</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-freetext" style="width:auto;"> Free-text temp stock item</label></div>
+      </div>
+      <div class="row" style="margin-top:6px; flex-wrap:wrap;">
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-manage-users" style="width:auto;"> Manage users (site-scoped)</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-manage-ward-staff" style="width:auto;"> Manage ward staff (ward-scoped)</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-manage-stocklists" style="width:auto;"> Manage stocklists</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-manage-wards-sites" style="width:auto;"> Manage wards &amp; sites</label></div>
+        ${isDeveloper() ? `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-view-bi" style="width:auto;"> Business Intelligence access</label></div>` : ''}
+      </div>
+      <div style="margin-top:10px;">
+        <label>Sites (tick one or more to reveal their wards below)</label>
+        <div class="checklist">${formSites.map(s => `<label><input type="checkbox" class="nu-site-scope-cb" value="${s.id}">${esc(s.name)}</label>`).join('') || '<span class="muted">No sites available to you yet.</span>'}</div>
+      </div>
+      <div style="margin-top:10px;">
+        <label>Ward access (a login can be allocated to more than one)</label>
+        <div id="nu-ward-groups"><span class="muted">Tick one or more sites above to see their wards.</span></div>
+      </div>`;
+    siteWrap.innerHTML = `
+      <div style="margin-top:10px;">
+        <label>Approval access <span class="muted" style="font-weight:400;">(which sites this login can approve above-max or restricted-reorder requests for — independent of their own ward access; requires "Approve orders" to actually be ticked below)</span></label>
+        <div class="checklist">${sites.map(s => `<label><input type="checkbox" class="nu-approval-site-cb" value="${s.id}">${esc(s.name)}</label>`).join('') || '<span class="muted">No sites yet.</span>'}</div>
+      </div>
+      <div style="margin-top:6px;"><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-approve" style="width:auto;"> Approve orders</label></div>
+      <div style="margin-top:10px;">
+        <label>Site access <span class="muted" style="font-weight:400;">(for Manage users / Manage stocklists / Manage wards &amp; sites — which sites this login can manage)</span></label>
+        <div class="checklist">${sites.map(s => `<label><input type="checkbox" class="nu-site-cb" value="${s.id}">${esc(s.name)}</label>`).join('') || '<span class="muted">No sites yet.</span>'}</div>
+      </div>`;
+
+    const checkedWards = formCheckedWards;
+    checkedWards.clear();
+    const updateWardGroups = () => {
+      document.querySelectorAll('.nu-ward-cb').forEach(cb => { if (cb.checked) checkedWards.add(cb.value); else checkedWards.delete(cb.value); });
+      const tickedSites = [...document.querySelectorAll('.nu-site-scope-cb:checked')].map(c => c.value);
+      const groupsEl = document.getElementById('nu-ward-groups');
+      if (!tickedSites.length) { groupsEl.innerHTML = '<span class="muted">Tick one or more sites above to see their wards.</span>'; return; }
+      groupsEl.innerHTML = tickedSites.map(sid => {
+        const siteWards = wardsForForm.filter(w => w.site_id === sid);
+        return `<div style="margin-bottom:10px;">
+          <div style="font-weight:600; font-size:12.5px; color:var(--navy); margin-bottom:4px;">${esc(siteName(sid))}</div>
+          <div class="checklist">${siteWards.map(w => `<label><input type="checkbox" class="nu-ward-cb" value="${w.id}" ${checkedWards.has(w.id) ? 'checked' : ''}>${esc(w.name)}</label>`).join('') || '<span class="muted">No wards at this site.</span>'}</div>
+        </div>`;
+      }).join('');
+    };
+    document.querySelectorAll('.nu-site-scope-cb').forEach(cb => cb.onchange = updateWardGroups);
+  }
+  document.getElementById('nu-role').onchange = renderRoleDependentFields;
+  renderRoleDependentFields();
+
+  document.getElementById('nu-pass-toggle').onclick = () => {
+    const input = document.getElementById('nu-pass');
+    const btn = document.getElementById('nu-pass-toggle');
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    btn.textContent = showing ? 'Show' : 'Hide';
+  };
+
+  const nameEl = document.getElementById('nu-name');
+  const useridEl = document.getElementById('nu-userid');
+  const useridStatusEl = document.getElementById('nu-userid-status');
+  let useridManuallyEdited = false;
+  useridEl.oninput = () => { useridManuallyEdited = useridEl.value.trim().length > 0; useridStatusEl.textContent = ''; };
+  nameEl.onblur = async () => {
+    if (useridManuallyEdited || !nameEl.value.trim()) return;
+    useridStatusEl.textContent = 'suggesting\u2026';
+    const suggestion = await suggestAvailableUserId(nameEl.value);
+    if (suggestion && !useridManuallyEdited) {
+      useridEl.value = suggestion;
+      useridStatusEl.textContent = '(suggested \u2014 edit freely)';
+    } else {
+      useridStatusEl.textContent = '';
+    }
+  };
+  let useridCheckTimer;
+  useridEl.addEventListener('input', () => {
+    clearTimeout(useridCheckTimer);
+    const val = useridEl.value.trim();
+    if (!val) { useridStatusEl.textContent = ''; return; }
+    useridCheckTimer = setTimeout(async () => {
+      const { data: exists } = await sb.rpc('user_id_exists', { candidate: val });
+      useridStatusEl.textContent = exists ? '\u26a0 already taken' : '\u2713 available';
+      useridStatusEl.style.color = exists ? 'var(--red)' : 'var(--teal)';
+    }, 400);
+  });
+
+  document.getElementById('create-user-btn').onclick = async () => {
+    const full_name = document.getElementById('nu-name').value.trim();
+    const user_id = document.getElementById('nu-userid').value.trim();
+    const passcode = document.getElementById('nu-pass').value;
+    const role = document.getElementById('nu-role').value;
+    if (!full_name || !user_id || !passcode) return toast('Fill in all fields.', true);
+    if (passcode.length < 12) return toast('Passcode must be at least 12 characters.', true);
+
+    const payload = {
+      user_id, passcode, full_name, role,
+      can_order: document.getElementById('nu-can-order')?.checked || false,
+      can_process: document.getElementById('nu-can-process')?.checked || false,
+      can_check_picking: document.getElementById('nu-can-check-picking')?.checked || false,
+      can_mark_nonurgent: document.getElementById('nu-can-nonurgent')?.checked || false,
+      can_freetext_temp_stock: document.getElementById('nu-can-freetext')?.checked || false,
+      can_manage_users: document.getElementById('nu-can-manage-users')?.checked || false,
+      can_manage_ward_staff: document.getElementById('nu-can-manage-ward-staff')?.checked || false,
+      can_manage_stocklists: document.getElementById('nu-can-manage-stocklists')?.checked || false,
+      can_manage_wards_sites: document.getElementById('nu-can-manage-wards-sites')?.checked || false,
+      can_approve_orders: document.getElementById('nu-can-approve')?.checked || false,
+    };
+    if (isDeveloper()) payload.can_view_bi = document.getElementById('nu-can-view-bi')?.checked || false;
+
+    document.querySelectorAll('.nu-ward-cb').forEach(cb => { if (cb.checked) formCheckedWards.add(cb.value); else formCheckedWards.delete(cb.value); });
+    payload.ward_ids = [...formCheckedWards];
+
+    // user_sites is purpose-agnostic reach — the same grant backs
+    // approval access, user management and stocklist/ward management —
+    // so both checklists above feed the same combined set.
+    const approvalSites = [...document.querySelectorAll('.nu-approval-site-cb:checked')].map(c => c.value);
+    const manageSites = [...document.querySelectorAll('.nu-site-cb:checked')].map(c => c.value);
+    payload.site_ids = [...new Set([...approvalSites, ...manageSites])];
+
+    const { data: { session: s } } = await sb.auth.getSession();
+    try {
+      const res = await fetch(`${FN_BASE}/admin-create-user`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${s.access_token}` },
+        body: JSON.stringify(payload),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error || 'Failed to create login');
+      toast('Login created.');
+      renderUsers();
+    } catch (e) { toast(e.message, true); }
+  };
+
+  const { data: users, error } = await sb.from('profiles').select('*').order('full_name');
+  const listEl = document.getElementById('user-list');
+  if (error) { listEl.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+
+  const visibleUsers = (users || []).filter(visibleFilter);
+  if (!visibleUsers?.length) { listEl.innerHTML = `<div class="empty">No logins yet.</div>`; return; }
+
+  const { data: allUserWards } = await sb.from('user_wards').select('user_id, ward_id');
+  const { data: allUserSites } = await sb.from('user_sites').select('user_id, site_id');
+  const wardsFor = (uid) => (allUserWards || []).filter(x => x.user_id === uid).map(x => wardName(x.ward_id)).join(', ') || '\u2014';
+  const sitesFor = (uid) => (allUserSites || []).filter(x => x.user_id === uid).map(x => siteName(x.site_id)).join(', ') || '\u2014';
+
+  function effectiveSiteIds(u) {
+    const directSites = (allUserSites || []).filter(x => x.user_id === u.id).map(x => x.site_id);
+    const wardIds = (allUserWards || []).filter(x => x.user_id === u.id).map(x => x.ward_id);
+    const wardSites = wardIds.map(wid => wards.find(w => w.id === wid)?.site_id).filter(Boolean);
+    return [...new Set([...directSites, ...wardSites])];
+  }
+
+  listEl.innerHTML = `
+    <div class="row" style="margin-bottom:14px;">
+      <div><label>Search name or User ID</label><input type="text" id="uf-search" placeholder="Start typing\u2026" /></div>
+      <div><label>Type</label><select id="uf-role"><option value="">All types</option>${[...new Set(visibleUsers.map(u => u.role))].map(r => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select></div>
+      <div><label>Site</label><select id="uf-site"><option value="">All sites</option>${sites.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
+    </div>
+    <div id="user-table-root"></div>`;
+
+  function userRowHtml(u) {
+    const capsules = [
+      u.can_order ? `<span class="capsule">Order</span>` : '',
+      u.can_process ? `<span class="capsule">Process</span>` : '',
+      u.can_check_picking ? `<span class="capsule">Checker</span>` : '',
+      u.can_approve_orders ? `<span class="capsule">Approve</span>` : '',
+      u.can_mark_nonurgent ? `<span class="capsule">Non-urgent</span>` : '',
+      u.can_manage_users ? `<span class="capsule">Manage users</span>` : '',
+      u.can_manage_ward_staff ? `<span class="capsule">Manage ward staff</span>` : '',
+      u.can_manage_stocklists ? `<span class="capsule">Manage stocklists</span>` : '',
+      u.can_manage_wards_sites ? `<span class="capsule">Manage wards/sites</span>` : '',
+      u.can_view_bi ? `<span class="capsule">BI</span>` : '',
+    ].filter(Boolean).join('');
+    const accessText = [wardsFor(u.id), sitesFor(u.id)].filter(t => t !== '\u2014').join(' / ') || '\u2014';
+    return `<tr>
+      <td>${esc(u.full_name)}${isSuperuser() ? `<div class="muted" style="font-size:11px;">${esc(u.user_id)}</div>` : ''}</td>
+      <td>${roleLabel(u.role)}</td>
+      <td>${capsules || '<span class="muted">\u2014</span>'}</td>
+      <td class="muted" style="max-width:220px;">${esc(accessText)}</td>
+      <td><span class="badge ${u.active ? 'active' : 'suspended'}">${u.active ? 'Active' : 'Inactive'}</span></td>
+      <td style="text-align:right; white-space:nowrap;">
+        <button class="btn small ghost" data-access="${u.id}">Access</button>
+        ${u.role === 'developer' ? '<span class="muted" style="font-size:11.5px;">Managed via Supabase</span>' : `
+        <button class="btn small ghost" data-reset="${u.id}">Reset password</button>
+        ${(u.id === profile.id || (isSuperuserRole() && u.role === 'developer')) ? '' : `<button class="btn small ${u.active ? 'danger' : 'magenta'}" data-susp="${u.id}">${u.active ? 'Deactivate' : 'Activate'}</button>`}
+        `}
+      </td>
+    </tr><tr id="access-row-${u.id}" class="hidden"><td colspan="6"><div class="access-panel" id="access-panel-${u.id}"></div></td></tr>`;
+  }
+
+  function userTableHtml(list) {
+    if (!list.length) return `<div class="empty">No matching logins.</div>`;
+    return `<table><thead><tr><th>Name</th><th>Type</th><th>Functions</th><th>Access</th><th>Status</th><th></th></tr></thead><tbody>
+      ${list.map(userRowHtml).join('')}
+    </tbody></table>`;
+  }
+
+  function renderUserTableRoot() {
+    const root = document.getElementById('user-table-root');
+    const search = document.getElementById('uf-search').value.trim().toLowerCase();
+    const roleFilter = document.getElementById('uf-role').value;
+    const siteFilter = document.getElementById('uf-site').value;
+    const filtersActive = !!(search || roleFilter || siteFilter);
+
+    let filtered = visibleUsers;
+    if (search) filtered = filtered.filter(u => u.full_name?.toLowerCase().includes(search) || u.user_id?.toLowerCase().includes(search));
+    if (roleFilter) filtered = filtered.filter(u => u.role === roleFilter);
+    if (siteFilter) filtered = filtered.filter(u => effectiveSiteIds(u).includes(siteFilter));
+
+    if (filtersActive || sites.length <= 1) {
+      root.innerHTML = userTableHtml(filtered);
+      attachRowHandlers(root, filtered);
+      return;
+    }
+
+    const groups = sites.map(s => ({ site: s, users: filtered.filter(u => effectiveSiteIds(u).includes(s.id)) }));
+    const unassigned = filtered.filter(u => effectiveSiteIds(u).length === 0);
+    root.innerHTML = groups.map(g => `
+      <details style="margin-bottom:8px; border:1px solid var(--border); border-radius:10px; padding:10px 14px;">
+        <summary style="cursor:pointer; font-weight:600; color:var(--navy);">${esc(g.site.name)} <span class="muted" style="font-weight:400;">(${g.users.length})</span></summary>
+        <div style="margin-top:10px;">${userTableHtml(g.users)}</div>
+      </details>`).join('')
+      + `<details style="border:1px solid var(--border); border-radius:10px; padding:10px 14px;">
+        <summary style="cursor:pointer; font-weight:600; color:var(--navy);">No specific site <span class="muted" style="font-weight:400;">(${unassigned.length})</span></summary>
+        <div style="margin-top:10px;">${userTableHtml(unassigned)}</div>
+      </details>`;
+    attachRowHandlers(root, filtered);
+  }
+
+  document.getElementById('uf-search').oninput = renderUserTableRoot;
+  document.getElementById('uf-role').onchange = renderUserTableRoot;
+  document.getElementById('uf-site').onchange = renderUserTableRoot;
+  renderUserTableRoot();
+
+  function attachRowHandlers(root, list) {
+    root.querySelectorAll('[data-susp]').forEach(b => b.onclick = async () => {
+      const u = list.find(x => x.id === b.dataset.susp);
+      const { error } = await sb.from('profiles').update({ active: !u.active }).eq('id', u.id);
+      if (error) return toast(error.message, true);
+      toast(u.active ? 'Login deactivated.' : 'Login activated.');
+      renderUsers();
+    });
+
+    root.querySelectorAll('[data-reset]').forEach(b => b.onclick = () => {
+      const u = list.find(x => x.id === b.dataset.reset);
+      confirmDialog('Reset password', `Generate a new temporary passcode for ${esc(u.full_name)}? They'll be asked to choose their own the next time they log in.`, 'Reset password', async () => {
+        const { data: { session: s } } = await sb.auth.getSession();
+        try {
+          const res = await fetch(`${FN_BASE}/admin-reset-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${s.access_token}` },
+            body: JSON.stringify({ target_id: u.id }),
+          });
+          const out = await res.json();
+          if (!res.ok) throw new Error(out.error || 'Failed to reset password');
+          openModal(`<h3>Temporary passcode</h3>
+            <p class="muted">Give this to ${esc(u.full_name)} \u2014 they'll be asked to set their own on next login.</p>
+            <p style="font-size:22px; font-weight:700; letter-spacing:2px; text-align:center; margin:16px 0; color:var(--navy);">${esc(out.temp_passcode)}</p>
+            <div class="actions"><button class="btn magenta" onclick="closeModal()">Done</button></div>`);
+        } catch (e) { toast(e.message, true); }
+      });
+    });
+
+    root.querySelectorAll('[data-access]').forEach(b => b.onclick = () => toggleAccessPanel(b.dataset.access, list));
+  }
+
+  async function toggleAccessPanel(userId, list) {
+    const row = document.getElementById(`access-row-${userId}`);
+    const panel = document.getElementById(`access-panel-${userId}`);
+    if (!row.classList.contains('hidden')) { row.classList.add('hidden'); return; }
+    row.classList.remove('hidden');
+    panel.innerHTML = 'Loading\u2026';
+    const u = list.find(x => x.id === userId) || visibleUsers.find(x => x.id === userId);
+
+    const { data: uw } = await sb.from('user_wards').select('ward_id').eq('user_id', userId);
+    const wardIds = (uw || []).map(x => x.ward_id);
+    const { data: us } = await sb.from('user_sites').select('site_id').eq('user_id', userId);
+    const currentSiteIds = (us || []).map(x => x.site_id);
+    const options = (isAdminRole() && !isSuperuser()) ? wards.filter(w => scopeSiteIds.includes(w.site_id)) : wards;
+    const optionSites = sites.filter(s => options.some(w => w.site_id === s.id));
+    const currentWardSiteIds = [...new Set(wardIds.map(wid => options.find(w => w.id === wid)?.site_id).filter(Boolean))];
+
+    panel.innerHTML = `
+      <div class="row" style="flex-wrap:wrap;">
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-order" style="width:auto;" ${u.can_order ? 'checked' : ''}> Order stock</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-process" style="width:auto;" ${u.can_process ? 'checked' : ''}> Process stock</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-check-picking" style="width:auto;" ${u.can_check_picking ? 'checked' : ''}> Can check picked requests</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-nonurgent" style="width:auto;" ${u.can_mark_nonurgent ? 'checked' : ''}> Can mark non-urgent</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-freetext" style="width:auto;" ${u.can_freetext_temp_stock ? 'checked' : ''}> Free-text temp stock item</label></div>
+      </div>
+      <div class="row" style="flex-wrap:wrap; margin-top:6px;">
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-manage-users" style="width:auto;" ${u.can_manage_users ? 'checked' : ''}> Manage users (site-scoped)</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-manage-ward-staff" style="width:auto;" ${u.can_manage_ward_staff ? 'checked' : ''}> Manage ward staff (ward-scoped)</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-manage-stocklists" style="width:auto;" ${u.can_manage_stocklists ? 'checked' : ''}> Manage stocklists</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-manage-wards-sites" style="width:auto;" ${u.can_manage_wards_sites ? 'checked' : ''}> Manage wards &amp; sites</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-approve" style="width:auto;" ${u.can_approve_orders ? 'checked' : ''}> Approve orders</label></div>
+        ${isDeveloper() ? `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-view-bi" style="width:auto;" ${u.can_view_bi ? 'checked' : ''}> Business Intelligence access</label></div>` : ''}
+      </div>
+      <label style="margin-top:10px;">Sites (tick one or more to reveal their wards below \u2014 also used as this login's reach for user/stocklist/ward/site management and order approval)</label>
+      <div class="checklist">${optionSites.map(s => `<label><input type="checkbox" class="ea-site-scope" value="${s.id}" ${(currentWardSiteIds.includes(s.id) || currentSiteIds.includes(s.id)) ? 'checked' : ''}>${esc(s.name)}</label>`).join('') || '<span class="muted">No sites available.</span>'}</div>
+      <label style="margin-top:10px;">Ward access</label>
+      <div id="ea-ward-groups-${userId}"></div>
+      <button class="btn magenta small" id="save-access-${userId}" style="margin-top:10px;">Save access</button>`;
+
+    const updateWardGroups = () => {
+      panel.querySelectorAll('.ea-ward').forEach(cb => { if (cb.checked) checkedWards.add(cb.value); else checkedWards.delete(cb.value); });
+      const tickedSites = [...panel.querySelectorAll('.ea-site-scope:checked')].map(c => c.value);
+      const groupsEl = document.getElementById(`ea-ward-groups-${userId}`);
+      if (!tickedSites.length) { groupsEl.innerHTML = '<span class="muted">Tick one or more sites above to see their wards.</span>'; return; }
+      groupsEl.innerHTML = tickedSites.map(sid => {
+        const siteWards = options.filter(w => w.site_id === sid);
+        return `<div style="margin-bottom:10px;">
+          <div style="font-weight:600; font-size:12.5px; color:var(--navy); margin-bottom:4px;">${esc(siteName(sid))}</div>
+          <div class="checklist">${siteWards.map(w => `<label><input type="checkbox" class="ea-ward" value="${w.id}" ${checkedWards.has(w.id) ? 'checked' : ''}>${esc(w.name)}</label>`).join('') || '<span class="muted">No wards at this site.</span>'}</div>
+        </div>`;
+      }).join('');
+    };
+    const checkedWards = new Set(wardIds);
+    panel.querySelectorAll('.ea-site-scope').forEach(cb => cb.onchange = updateWardGroups);
+    updateWardGroups();
+
+    document.getElementById(`save-access-${userId}`).onclick = async () => {
+      panel.querySelectorAll('.ea-ward').forEach(cb => { if (cb.checked) checkedWards.add(cb.value); else checkedWards.delete(cb.value); });
+      const newWardIds = [...checkedWards];
+      const newSiteIds = [...panel.querySelectorAll('.ea-site-scope:checked')].map(c => c.value);
+      const updates = {
+        can_order: document.getElementById('ea-order').checked,
+        can_process: document.getElementById('ea-process').checked,
+        can_check_picking: document.getElementById('ea-check-picking').checked,
+        can_mark_nonurgent: document.getElementById('ea-nonurgent').checked,
+        can_freetext_temp_stock: document.getElementById('ea-freetext').checked,
+        can_manage_users: document.getElementById('ea-manage-users').checked,
+        can_manage_ward_staff: document.getElementById('ea-manage-ward-staff').checked,
+        can_manage_stocklists: document.getElementById('ea-manage-stocklists').checked,
+        can_manage_wards_sites: document.getElementById('ea-manage-wards-sites').checked,
+        can_approve_orders: document.getElementById('ea-approve').checked,
+      };
+      if (isDeveloper()) updates.can_view_bi = document.getElementById('ea-view-bi').checked;
+      const { error: updErr } = await sb.from('profiles').update(updates).eq('id', userId);
+      if (updErr) return toast(updErr.message, true);
+      await sb.from('user_wards').delete().eq('user_id', userId);
+      if (newWardIds.length) await sb.from('user_wards').insert(newWardIds.map(ward_id => ({ user_id: userId, ward_id })));
+      await sb.from('user_sites').delete().eq('user_id', userId);
+      if (newSiteIds.length) await sb.from('user_sites').insert(newSiteIds.map(site_id => ({ user_id: userId, site_id })));
+      toast('Access updated.');
+      row.classList.add('hidden');
+      renderUsers();
+    };
+  }
+}
+
+async function renderWardManagerNurseList() {
+  const body = document.getElementById('body');
+  const { data: myWardRows } = await sb.from('user_wards').select('ward_id').eq('user_id', profile.id);
+  const myWardIds = (myWardRows || []).map(w => w.ward_id);
+  if (!myWardIds.length) { body.innerHTML = `<div class="card"><div class="empty">No wards have been allocated to your login yet.</div></div>`; return; }
+
+  const { data: nurseWardRows } = await sb.from('user_wards').select('user_id, ward_id').in('ward_id', myWardIds);
+  const nurseIds = [...new Set((nurseWardRows || []).map(w => w.user_id))];
+  if (!nurseIds.length) { body.innerHTML = `<div class="card"><h2>Ward staff in your ward(s)</h2><div class="empty">No one found.</div></div>`; return; }
+
+  const { data: shared } = await sb.from('profiles').select('*').in('id', nurseIds).order('full_name');
+  const nurses = (shared || []).filter(u =>
+    !['developer', 'superuser', 'governance'].includes(u.role)
+    && !(u.can_manage_users || u.can_manage_ward_staff || u.can_manage_stocklists || u.can_manage_wards_sites || u.can_approve_orders)
+  );
+  body.innerHTML = `<div class="card"><h2>Ward staff in your ward(s)</h2>
+    <p class="muted">Deactivating here is one-way \u2014 reactivation needs a superuser or someone with Manage users access. Accounts with their own manager-level access aren't shown here.</p>
+    ${!nurses?.length ? `<div class="empty">No one found.</div>` : `
+    <table><thead><tr><th>Name</th><th>Status</th><th></th></tr></thead><tbody>
+      ${nurses.map(n => `<tr>
+        <td>${esc(n.full_name)}</td>
+        <td><span class="badge ${n.active ? 'active' : 'suspended'}">${n.active ? 'Active' : 'Inactive'}</span></td>
+        <td style="text-align:right;">${n.active ? `<button class="btn small danger" data-deactivate="${n.id}">Deactivate</button>` : `<span class="muted">Already inactive</span>`}</td>
+      </tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+  body.querySelectorAll('[data-deactivate]').forEach(b => b.onclick = () => {
+    const n = nurses.find(x => x.id === b.dataset.deactivate);
+    confirmDialog('Deactivate account', `Deactivate ${esc(n.full_name)}? They will need to contact support to be reactivated.`, 'Deactivate', async () => {
+      const { error } = await sb.from('profiles').update({ active: false }).eq('id', n.id);
+      if (error) return toast(error.message, true);
+      toast('Account deactivated.');
+      renderWardManagerNurseList();
+    }, true);
+  });
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => isAnyManagerType() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderUsers();
+})();
+</script>
+</body>
+</html>

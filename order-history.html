@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Order history</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="order-history.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderWardHistory() {
+  const body = document.getElementById('body');
+  if (!myWards.length) { body.innerHTML = `<div class="card"><div class="empty">No wards have been allocated to your login yet.</div></div>`; return; }
+  const wardIds = myWards.map(w => w.id);
+  const { data: sessionsData, error } = await sb.from('order_sessions').select('*').in('ward_id', wardIds)
+    .order('created_at', { ascending: false }).limit(50);
+  if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!sessionsData?.length) { body.innerHTML = `<div class="card"><h2>All orders — ${esc(myWards.map(w => w.name).join(', '))}</h2><div class="empty">No orders yet.</div></div>`; return; }
+
+  const { data: lines } = await sb.from('orders').select('*').in('session_id', sessionsData.map(s => s.id));
+  const nameById = await fetchNameMap(lines || []);
+  body.innerHTML = `<div class="card"><h2>All orders — ${esc(myWards.map(w => w.name).join(', '))}</h2>
+    ${sessionsData.map(s => {
+      const wardTag = myWards.length > 1 ? `<b>${esc(wardName(s.ward_id))}</b> \u00b7 ` : '';
+      return renderSessionCard(s, lines || [], nameById).replace('<span>', `<span>${wardTag}`);
+    }).join('')}
+  </div>`;
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => !!pr.can_order });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderWardHistory();
+})();
+</script>
+</body>
+</html>

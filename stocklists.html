@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Stocklists</title>
+<link rel="stylesheet" href="shared.css" />
+<script src="vendor/jspdf.umd.min.js"></script>
+</head>
+<body data-page="stocklists.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>let catalog = [];
+let builderSnapshotAtParse = null;
+let builderState = {}; // medicine_name -> { checked, max_qty }
+
+// A stable string representing the exact state of a ward's stocklist
+// (which drugs, at what max qty) — order-independent, so it only
+// changes when the actual content does.
+function stocklistFingerprint(items) {
+  return items.map(i => `${i.medicine_name}::${i.min_qty ?? ''}::${i.max_qty}`).sort().join('|');
+}
+
+async function loadBuilder(ward_id) {
+  const { data: current } = await sb.from('blist_items').select('medicine_name, min_qty, max_qty').eq('ward_id', ward_id);
+  builderSnapshotAtParse = stocklistFingerprint(current || []);
+  const currentByName = Object.fromEntries((current || []).map(i => [i.medicine_name, i]));
+  builderState = {};
+  catalog.forEach(c => {
+    const existing = currentByName[c.medicine_name];
+    builderState[c.medicine_name] = { checked: !!existing, min_qty: existing?.min_qty ?? '', max_qty: existing?.max_qty ?? 1 };
+  });
+  renderBuilderList();
+}
+
+function renderBuilderList() {
+  const search = (document.getElementById('builder-search')?.value || '').trim().toLowerCase();
+  const el = document.getElementById('builder-list');
+  if (!catalog.length) { el.innerHTML = `<div class="empty">The drug catalog is empty \u2014 a developer needs to add drugs there first.</div>`; return; }
+  const visible = catalog.filter(c => !search || c.medicine_name.toLowerCase().includes(search));
+  el.innerHTML = `<div style="max-height:420px; overflow-y:auto; border:1px solid var(--border); border-radius:8px;">
+    <table><thead><tr><th style="width:36px;"></th><th>Drug</th><th class="muted">Pack size</th><th style="width:100px;">Min qty</th><th style="width:100px;">Max qty</th></tr></thead><tbody>
+    ${visible.map(c => {
+      const st = builderState[c.medicine_name];
+      return `<tr>
+        <td><input type="checkbox" class="builder-cb" data-name="${esc(c.medicine_name)}" ${st.checked ? 'checked' : ''} /></td>
+        <td>${esc(c.medicine_name)}</td>
+        <td class="muted">${esc(c.pack_size || '\u2014')}</td>
+        <td><input type="number" min="0" class="builder-minqty" data-name="${esc(c.medicine_name)}" value="${st.min_qty}" placeholder="\u2014" ${st.checked ? '' : 'disabled'} style="width:60px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" /></td>
+        <td><input type="number" min="1" class="builder-qty" data-name="${esc(c.medicine_name)}" value="${st.max_qty}" ${st.checked ? '' : 'disabled'} style="width:60px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" /></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>
+    ${!visible.length ? '<div class="empty">No catalog drugs match that search.</div>' : ''}
+  </div>`;
+
+  el.querySelectorAll('.builder-cb').forEach(cb => cb.onchange = () => {
+    builderState[cb.dataset.name].checked = cb.checked;
+    el.querySelector(`.builder-minqty[data-name="${CSS.escape(cb.dataset.name)}"]`).disabled = !cb.checked;
+    el.querySelector(`.builder-qty[data-name="${CSS.escape(cb.dataset.name)}"]`).disabled = !cb.checked;
+  });
+  el.querySelectorAll('.builder-minqty').forEach(inp => inp.oninput = () => {
+    const v = inp.value.trim();
+    builderState[inp.dataset.name].min_qty = v === '' ? '' : Math.max(0, parseInt(v, 10) || 0);
+  });
+  el.querySelectorAll('.builder-qty').forEach(inp => inp.oninput = () => {
+    builderState[inp.dataset.name].max_qty = Math.max(1, parseInt(inp.value, 10) || 1);
+  });
+}
+
+async function publishFromBuilder() {
+  const ward_id = document.getElementById('stock-ward').value;
+  if (!ward_id) return toast('Select a ward first.', true);
+
+  // The ward's stocklist may have changed since this builder was
+  // opened (someone else quick-added a drug, adjusted a max qty, or
+  // an "add across every ward" reached this ward) — publishing is a
+  // full replace, so it would silently discard that without this check.
+  const { data: nowRows, error: checkErr } = await sb.from('blist_items').select('medicine_name, min_qty, max_qty').eq('ward_id', ward_id);
+  if (checkErr) return toast(checkErr.message, true);
+  if (stocklistFingerprint(nowRows || []) !== builderSnapshotAtParse) {
+    toast('This ward\u2019s stocklist has changed since you opened the builder \u2014 publishing now would overwrite that. Reload the builder and try again.', true);
+    return;
+  }
+
+  const toPublish = Object.entries(builderState).filter(([, st]) => st.checked)
+    .map(([medicine_name, st]) => ({ medicine_name, min_qty: st.min_qty === '' ? null : st.min_qty, max_qty: st.max_qty }));
+  if (!toPublish.length) return toast('Tick at least one drug.', true);
+  const badRow = toPublish.find(r => r.min_qty !== null && r.min_qty > r.max_qty);
+  if (badRow) return toast(`${badRow.medicine_name}: min qty can\u2019t be greater than max qty.`, true);
+
+  const { error: delErr } = await sb.from('blist_items').delete().eq('ward_id', ward_id);
+  if (delErr) return toast(delErr.message, true);
+  const { error: insErr } = await sb.from('blist_items').insert(toPublish.map(({ medicine_name, min_qty, max_qty }) => ({ medicine_name, min_qty, max_qty, ward_id })));
+  if (insErr) return toast(insErr.message, true);
+  toast(`Stocklist published \u2014 ${toPublish.length} drug(s).`);
+  loadStockList();
+  loadStockHistory();
+  loadBuilder(ward_id);
+}
+
+async function exportStocklistPdf(ward_id) {
+  if (!ward_id) return toast('Select a ward first.', true);
+  const ward = wards.find(w => w.id === ward_id);
+  const { data, error } = await sb.from('blist_items').select('*').eq('ward_id', ward_id).order('medicine_name');
+  if (error) return toast(error.message, true);
+  if (!data?.length) return toast('This ward has no stocklist to export yet.', true);
+
+  // Group by section — a drug flagged under more than one section
+  // (e.g. both "Cold store" and "Injections") appears under each,
+  // since a nurse needs to find it either way. Anything with no
+  // section goes under a plain "General" heading.
+  const names = data.map(d => d.medicine_name);
+  const { data: catalogRows } = await sb.from('drug_catalog').select('id, medicine_name').in('medicine_name', names);
+  const catalogIdByName = Object.fromEntries((catalogRows || []).map(c => [c.medicine_name, c.id]));
+  const catalogIds = (catalogRows || []).map(c => c.id);
+  const { data: links } = catalogIds.length
+    ? await sb.from('drug_catalog_sections').select('drug_catalog_id, section_id').in('drug_catalog_id', catalogIds)
+    : { data: [] };
+  const { data: sectionRows } = await sb.from('drug_sections').select('id, name');
+  const sectionNameById = Object.fromEntries((sectionRows || []).map(s => [s.id, s.name]));
+  const sectionsByCatalogId = {};
+  (links || []).forEach(l => { (sectionsByCatalogId[l.drug_catalog_id] ??= []).push(sectionNameById[l.section_id]); });
+
+  const groups = {};
+  data.forEach(item => {
+    const catalogId = catalogIdByName[item.medicine_name];
+    const itemSections = catalogId ? (sectionsByCatalogId[catalogId] || []) : [];
+    const targets = itemSections.length ? itemSections : ['General'];
+    targets.forEach(sec => { (groups[sec] ??= []).push(item); });
+  });
+  const sectionNames = Object.keys(groups).filter(s => s !== 'General').sort((a, b) => a.localeCompare(b));
+  if (groups['General']) sectionNames.push('General');
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 40;
+  let y = margin;
+
+  if (systemSettings.trust_logo_data_url) {
+    try {
+      const fmt = systemSettings.trust_logo_data_url.includes('image/png') ? 'PNG' : 'JPEG';
+      doc.addImage(systemSettings.trust_logo_data_url, fmt, margin, y, 100, 45, undefined, 'FAST');
+    } catch (e) { /* a corrupt or unsupported image shouldn't block the export */ }
+    y += 60;
+  }
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+  doc.text(`${ward?.name || 'Ward'} \u2014 Stocklist`, margin, y);
+  y += 20;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(100);
+  doc.text(`Exported: ${new Date().toLocaleString('en-GB')}`, margin, y);
+  doc.setTextColor(0);
+  y += 24;
+
+  const colX = { name: margin, min: pageWidth - margin - 160, max: pageWidth - margin - 70 };
+  const nameMaxWidth = colX.min - colX.name - 10;
+  const lineHeight = 13;
+  const minRowHeight = 20;
+  const drawColumnHeader = () => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+    doc.text('Medicine', colX.name, y);
+    doc.text('Min level', colX.min, y);
+    doc.text('Max level', colX.max, y);
+    y += 6;
+    doc.setLineWidth(0.5);
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 14;
+    doc.setFont('helvetica', 'normal');
+  };
+  const rowHeightFor = (item) => {
+    const nameLines = doc.splitTextToSize(item.medicine_name, nameMaxWidth);
+    return { nameLines, rowHeight: Math.max(minRowHeight, nameLines.length * lineHeight + 6) };
+  };
+  const drawRow = (item, i) => {
+    const { nameLines, rowHeight } = rowHeightFor(item);
+    if (y - 14 + rowHeight > pageHeight - margin) {
+      doc.addPage();
+      y = margin;
+      drawColumnHeader();
+    }
+    if (i % 2 === 1) { doc.setFillColor(246, 247, 249); doc.rect(margin - 4, y - 14, pageWidth - 2 * margin + 8, rowHeight, 'F'); }
+    doc.text(nameLines, colX.name, y);
+    doc.text(item.min_qty === null || item.min_qty === undefined ? '\u2014' : String(item.min_qty), colX.min, y);
+    doc.text(String(item.max_qty), colX.max, y);
+    y += rowHeight;
+  };
+
+  let firstSection = true;
+  sectionNames.forEach(secName => {
+    const items = groups[secName];
+    // Orphan control: a section heading needs room for itself, the
+    // column header, and at least one row beneath it — otherwise it
+    // starts the new page instead of sitting alone at the bottom.
+    const firstRow = rowHeightFor(items[0]).rowHeight;
+    const neededForHeading = 24 + 6 + 14 + firstRow;
+    if (!firstSection && y - 14 + neededForHeading > pageHeight - margin) {
+      doc.addPage();
+      y = margin;
+    }
+    if (!firstSection) y += 10;
+    firstSection = false;
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
+    doc.text(secName, margin, y);
+    y += 18;
+    drawColumnHeader();
+    items.forEach((item, i) => drawRow(item, i));
+  });
+
+  doc.save(`${(ward?.name || 'ward').replace(/[^a-z0-9]+/gi, '-')}-stocklist.pdf`);
+}
+
+async function loadStockList() {
+  const ward_id = document.getElementById('stock-ward').value;
+  const listEl = document.getElementById('stock-list');
+  const { data, error } = await sb.from('blist_items').select('*').eq('ward_id', ward_id).order('medicine_name');
+  if (error) { listEl.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!data?.length) { listEl.innerHTML = `<div class="empty">No stocklist uploaded for this ward yet.</div>`; return; }
+  const canEdit = isSuperuser() || canManageStocklists();
+  listEl.innerHTML = `<table><thead><tr><th>Medicine</th><th>Min qty</th><th>Max qty</th>${canEdit ? '<th>Restricted reorder</th><th></th>' : ''}</tr></thead><tbody>
+    ${data.map(i => `<tr>
+      <td>${esc(i.medicine_name)}</td>
+      <td>${canEdit
+        ? `<input type="number" min="0" id="minqty-${i.id}" value="${i.min_qty ?? ''}" placeholder="\u2014" style="width:64px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" />`
+        : (i.min_qty ?? '\u2014')}</td>
+      <td>${canEdit
+        ? `<input type="number" min="1" id="maxqty-${i.id}" value="${i.max_qty}" style="width:64px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" />`
+        : i.max_qty}</td>
+      ${canEdit ? `<td><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="reorder-approval-cb" data-item="${i.id}" ${i.requires_reorder_approval ? 'checked' : ''} style="width:auto;" />Flagged</label></td>
+      <td style="text-align:right;"><button class="btn small ghost" data-save-qty="${i.id}">Save</button></td>` : ''}
+    </tr>`).join('')}
+  </tbody></table>`;
+
+  if (canEdit) {
+    listEl.querySelectorAll('[data-save-qty]').forEach(b => b.onclick = async () => {
+      const id = b.dataset.saveQty;
+      const maxInput = document.getElementById(`maxqty-${id}`);
+      const minInput = document.getElementById(`minqty-${id}`);
+      const newMax = Math.max(1, parseInt(maxInput.value, 10) || 1);
+      const minRaw = minInput.value.trim();
+      const newMin = minRaw === '' ? null : Math.max(0, parseInt(minRaw, 10) || 0);
+      if (newMin !== null && newMin > newMax) return toast('Min qty can\u2019t be greater than max qty.', true);
+      const { error: updErr } = await sb.from('blist_items').update({ max_qty: newMax, min_qty: newMin }).eq('id', id);
+      if (updErr) return toast(updErr.message, true);
+      toast('Quantities updated.');
+      loadStockHistory();
+    });
+    listEl.querySelectorAll('.reorder-approval-cb').forEach(cb => cb.onchange = async () => {
+      const { error: updErr } = await sb.from('blist_items').update({ requires_reorder_approval: cb.checked }).eq('id', cb.dataset.item);
+      if (updErr) { toast(updErr.message, true); cb.checked = !cb.checked; return; }
+      toast(cb.checked
+        ? 'This drug is now restricted \u2014 a repeat order within the reorder-approval window will be held for a pharmacist or approved technician.'
+        : 'No longer restricted for this ward.');
+      loadStockHistory();
+    });
+  }
+}
+
+async function renderAdminStock() {
+  const body = document.getElementById('body');
+  const sortedSites = [...sites].sort((a, b) => a.name.localeCompare(b.name));
+  const wardOptionsHtml = (list) => list.slice().sort((a, b) => a.name.localeCompare(b.name)).map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('');
+  const unassignedWards = wards.filter(w => !w.site_id);
+  const groupedWardOptions = sortedSites.map(s => {
+    const siteWards = wards.filter(w => w.site_id === s.id);
+    return siteWards.length ? `<optgroup label="${esc(s.name)}">${wardOptionsHtml(siteWards)}</optgroup>` : '';
+  }).join('') + (unassignedWards.length ? `<optgroup label="No site assigned">${wardOptionsHtml(unassignedWards)}</optgroup>` : '');
+
+  const { data: catalogRows } = await sb.from('drug_catalog').select('*').order('medicine_name');
+  catalog = catalogRows || [];
+  const catalogOptionHtml = (id) => `<option value="">${catalog.length ? 'Choose a drug\u2026' : 'Catalog is empty'}</option>` +
+    catalog.map(c => `<option value="${esc(c.medicine_name)}">${esc(c.medicine_name)}${c.pack_size ? ` (${esc(c.pack_size)})` : ''}</option>`).join('');
+
+  body.innerHTML = `
+    <div class="card">
+      <h2>Ward</h2>
+      <div class="row"><div><label>Ward</label><select id="stock-ward">${groupedWardOptions}</select></div></div>
+    </div>
+    <div class="card">
+      <h2>Build stocklist from catalog</h2>
+      <p class="muted">Tick what this ward stocks and set its max qty, then publish \u2014 this replaces the ward's whole stocklist with your selections here, so every drug on it is guaranteed to be a real catalog entry with a consistent name. Not seeing a drug? A developer adds it from the Drug Catalog page first.</p>
+      <div class="row" style="margin-top:8px;"><div><label>Search</label><input type="text" id="builder-search" placeholder="Filter the catalog\u2026" /></div></div>
+      <div id="builder-list" style="margin-top:8px;">Loading\u2026</div>
+      <button class="btn magenta" id="builder-publish-btn" style="margin-top:12px;">Publish stocklist</button>
+    </div>
+    <div class="card"><h2>Current stocklist</h2>
+      <div class="row" style="margin-bottom:12px;">
+        <div><label>Add a drug to this ward</label><select id="add-drug-name">${catalogOptionHtml()}</select></div>
+        <div><label>Min qty</label><input type="number" min="0" id="add-drug-minqty" placeholder="\u2014" style="max-width:100px;" /></div>
+        <div><label>Max qty</label><input type="number" min="1" id="add-drug-maxqty" value="1" style="max-width:100px;" /></div>
+        <div style="align-self:flex-end;"><button class="btn magenta small" id="add-drug-btn">Add to this ward</button></div>
+      </div>
+      <div style="margin-bottom:12px;"><button class="btn ghost small" id="export-pdf-btn">Export as PDF</button></div>
+      <div id="stock-list">Loading\u2026</div>
+    </div>
+    <div class="card">
+      <h2>Add a drug across every ward</h2>
+      <p class="muted">For a drug already in the catalog \u2014 adds it to every active ward's stocklist at once, at the max quantity given, skipping any ward that already stocks it. Individual wards can still be adjusted afterwards from the list above.</p>
+      <div class="row">
+        <div><label>Medicine</label><select id="bulk-add-name">${catalogOptionHtml()}</select></div>
+        <div><label>Min qty</label><input type="number" min="0" id="bulk-add-minqty" placeholder="\u2014" style="max-width:100px;" /></div>
+        <div><label>Max qty</label><input type="number" min="1" id="bulk-add-maxqty" value="1" style="max-width:100px;" /></div>
+        <div style="align-self:flex-end;"><button class="btn magenta small" id="bulk-add-btn">Add to all wards</button></div>
+      </div>
+    </div>
+    <div class="card"><h2>Recent changes to this ward's stocklist</h2><div id="stock-history">Loading\u2026</div></div>`;
+
+  document.getElementById('stock-ward').onchange = () => {
+    loadStockList();
+    loadStockHistory();
+    loadBuilder(document.getElementById('stock-ward').value);
+  };
+  document.getElementById('builder-search').oninput = renderBuilderList;
+  document.getElementById('builder-publish-btn').onclick = publishFromBuilder;
+  document.getElementById('export-pdf-btn').onclick = () => exportStocklistPdf(document.getElementById('stock-ward').value);
+
+  document.getElementById('add-drug-btn').onclick = async () => {
+    const name = document.getElementById('add-drug-name').value;
+    const minRaw = document.getElementById('add-drug-minqty').value.trim();
+    const maxQty = Math.max(1, parseInt(document.getElementById('add-drug-maxqty').value, 10) || 1);
+    const minQty = minRaw === '' ? null : Math.max(0, parseInt(minRaw, 10) || 0);
+    if (!name) return toast('Choose a medicine.', true);
+    if (minQty !== null && minQty > maxQty) return toast('Min qty can\u2019t be greater than max qty.', true);
+    const ward_id = document.getElementById('stock-ward').value;
+    const { error: insErr } = await sb.from('blist_items').insert({ ward_id, medicine_name: name, min_qty: minQty, max_qty: maxQty });
+    if (insErr) return toast(insErr.message.includes('duplicate') ? 'Already on this ward\u2019s stocklist.' : insErr.message, true);
+    document.getElementById('add-drug-name').value = '';
+    document.getElementById('add-drug-minqty').value = '';
+    document.getElementById('add-drug-maxqty').value = '1';
+    toast(`${name} added to this ward\u2019s stocklist.`);
+    loadStockList();
+    loadStockHistory();
+    loadBuilder(ward_id);
+  };
+
+  document.getElementById('bulk-add-btn').onclick = async () => {
+    const name = document.getElementById('bulk-add-name').value;
+    const minRaw = document.getElementById('bulk-add-minqty').value.trim();
+    const maxQty = Math.max(1, parseInt(document.getElementById('bulk-add-maxqty').value, 10) || 1);
+    const minQty = minRaw === '' ? null : Math.max(0, parseInt(minRaw, 10) || 0);
+    if (!name) return toast('Choose a medicine.', true);
+    if (minQty !== null && minQty > maxQty) return toast('Min qty can\u2019t be greater than max qty.', true);
+    const activeWardIds = wards.filter(w => w.active !== false).map(w => w.id);
+    const { data: existing } = await sb.from('blist_items').select('ward_id').eq('medicine_name', name).in('ward_id', activeWardIds);
+    const existingIds = new Set((existing || []).map(r => r.ward_id));
+    const toInsert = activeWardIds.filter(id => !existingIds.has(id)).map(ward_id => ({ ward_id, medicine_name: name, min_qty: minQty, max_qty: maxQty }));
+    if (!toInsert.length) return toast('Every active ward already stocks this drug.', true);
+    const { error: insErr } = await sb.from('blist_items').insert(toInsert);
+    if (insErr) return toast(insErr.message, true);
+    document.getElementById('bulk-add-name').value = '';
+    document.getElementById('bulk-add-minqty').value = '';
+    document.getElementById('bulk-add-maxqty').value = '1';
+    toast(`${name} added to ${toInsert.length} ward${toInsert.length > 1 ? 's' : ''} (${existingIds.size} already had it).`);
+    loadStockList();
+    loadStockHistory();
+    loadBuilder(document.getElementById('stock-ward').value);
+  };
+
+  await loadStockList();
+  await loadStockHistory();
+  await loadBuilder(document.getElementById('stock-ward').value);
+}
+
+(async () => {
+  const p = await requireAuth({ require: () => isSuperuser() || canManageStocklists() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderAdminStock();
+})();
+</script>
+</body>
+</html>

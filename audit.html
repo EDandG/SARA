@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Audit</title>
+<link rel="stylesheet" href="shared.css" />
+<script src="vendor/xlsx.full.min.js"></script>
+</head>
+<body data-page="audit.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>async function renderAudit() {
+  const body = document.getElementById('body');
+  const { data: users } = await sb.from('profiles').select('id, full_name').order('full_name');
+  body.innerHTML = `
+    <div class="card">
+      <h2>Audit</h2>
+      <div class="row">
+        <div><label>Site</label><select id="au-site"><option value="">All sites</option>${sites.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
+        <div><label>Ward</label><select id="au-ward"><option value="">All wards</option>${wards.map(w => `<option value="${w.id}" data-site="${w.site_id || ''}">${esc(w.name)}</option>`).join('')}</select></div>
+        <div><label>Ordered by</label><select id="au-user"><option value="">All users</option>${(users || []).map(u => `<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}</select></div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <div><label>Status</label><select id="au-status"><option value="">All statuses</option>
+          <option value="pending">Pending</option><option value="pending_approval">Awaiting approval</option>
+          <option value="complete">Complete</option><option value="out_of_stock">Out of stock</option>
+          <option value="part_supplied">Part supplied</option><option value="duplicate">Duplicate order</option>
+          <option value="non_urgent">Non-urgent</option></select></div>
+        <div><label>Medicine contains</label><input type="text" id="au-med" placeholder="e.g. diazepam" /></div>
+      </div>
+      <div style="margin-top:14px; display:flex; gap:10px;">
+        <button class="btn magenta" id="au-run">Search</button>
+        <button class="btn ghost" id="au-export">Export to Excel</button>
+      </div>
+    </div>
+    <div class="card"><h2>Results</h2><div id="au-results">Run a search to see results.</div></div>`;
+
+  document.getElementById('au-site').onchange = () => {
+    const siteId = document.getElementById('au-site').value;
+    document.querySelectorAll('#au-ward option[data-site]').forEach(o => {
+      o.hidden = siteId && o.dataset.site !== siteId;
+    });
+    document.getElementById('au-ward').value = '';
+  };
+
+  let lastResults = [];
+  document.getElementById('au-run').onclick = runAudit;
+  document.getElementById('au-export').onclick = () => {
+    if (!lastResults.length) return toast('Run a search first.', true);
+    exportRowsToExcel(lastResults, `sara-audit-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  async function runAudit() {
+    let q = sb.from('orders').select('*').order('created_at', { ascending: false }).limit(2000);
+    const site = document.getElementById('au-site').value;
+    const ward = document.getElementById('au-ward').value;
+    const user = document.getElementById('au-user').value;
+    const status = document.getElementById('au-status').value;
+    const med = document.getElementById('au-med').value.trim();
+    if (ward) q = q.eq('ward_id', ward);
+    else if (site) q = q.in('ward_id', wards.filter(w => w.site_id === site).map(w => w.id));
+    if (user) q = q.eq('ordered_by', user);
+    if (status) q = q.eq('status', status);
+    if (med) q = q.ilike('medicine_name', `%${med}%`);
+
+    const { data, error } = await q;
+    const el = document.getElementById('au-results');
+    if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+
+    const nameById = Object.fromEntries((users || []).map(u => [u.id, u.full_name]));
+    lastResults = (data || []).map(o => {
+      const w = wards.find(x => x.id === o.ward_id);
+      return { ...o, _wardName: w?.name || '', _siteName: w?.site_id ? siteName(w.site_id) : '', _orderedByName: nameById[o.ordered_by] || '', _processedByName: nameById[o.processed_by] || '' };
+    });
+
+    if (!lastResults.length) { el.innerHTML = `<div class="empty">No matching orders.</div>`; return; }
+    el.innerHTML = `<p class="muted">${lastResults.length} result(s)</p>
+      <table><thead><tr><th>Site</th><th>Ward</th><th>Medicine</th><th>Qty</th><th>Status</th><th>Ordered</th></tr></thead><tbody>
+      ${lastResults.map(o => `<tr>
+        <td>${esc(o._siteName)}</td><td>${esc(o._wardName)}</td>
+        <td>${esc(o.medicine_name)}${attribution('Processed by', o._processedByName, o.processed_at)}${fulfilledNote(o)}</td>
+        <td>${o.quantity}</td>
+        <td><span class="badge ${o.status}">${statusLabel(o.status)}</span></td>
+        <td class="muted">${fmtDate(o.created_at)}${o._orderedByName ? ` \u00b7 ${esc(o._orderedByName)}` : ''}</td>
+      </tr>`).join('')}
+      </tbody></table>`;
+  }
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => ['governance','developer','superuser'].includes(pr.role) });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderAudit();
+})();
+</script>
+</body>
+</html>

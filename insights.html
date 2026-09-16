@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Insights</title>
+<link rel="stylesheet" href="shared.css" />
+<script src="vendor/chart.umd.min.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
+</head>
+<body data-page="insights.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>let currentGranularity = 'month';
+let currentSiteIds = [];   // empty = all sites
+let currentWardIds = [];   // empty = all wards within selected sites (or all wards if no site selected)
+let currentDrugs = [];
+let drugFilterActive = false;
+let viewMode = 'lines';    // 'lines' | 'items'
+let customFrom = null, customTo = null;
+let charts = {};
+
+function defaultRangeFor(granularity) {
+  const to = new Date();
+  const from = new Date();
+  if (granularity === 'day') from.setDate(from.getDate() - 29);
+  else if (granularity === 'month') from.setMonth(from.getMonth() - 11);
+  else from.setMonth(from.getMonth() - 23);
+  from.setHours(0, 0, 0, 0);
+  return { from, to };
+}
+
+function periodKey(dateIso, granularity) {
+  const d = new Date(dateIso);
+  if (granularity === 'day') return d.toISOString().slice(0, 10);
+  if (granularity === 'month') return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const q = Math.floor(d.getMonth() / 3) + 1;
+  return `${d.getFullYear()}-Q${q}`;
+}
+function periodLabel(key, granularity) {
+  if (granularity === 'day') return new Date(key).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  if (granularity === 'month') {
+    const [y, m] = key.split('-');
+    return new Date(y, m - 1, 1).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+  }
+  return key;
+}
+function sortedPeriodKeys(keysSet) { return [...keysSet].sort(); }
+
+const UNFULFILLED_STATUSES = ['out_of_stock', 'part_supplied'];
+function statusBucket(row) {
+  if (row.unfulfilled_marked_at || UNFULFILLED_STATUSES.includes(row.status)) return 'unfulfilled';
+  if (row.status === 'complete') return 'complete';
+  if (row.status === 'non_urgent') return 'non_urgent';
+  if (row.status === 'pending' || row.status === 'pending_approval') return 'pending';
+  return 'other';
+}
+const BUCKET_LABEL = { complete: 'Completed (no hiccups)', unfulfilled: 'Ever out of stock / to follow', non_urgent: 'Non-urgent', pending: 'Pending', other: 'Duplicate / other' };
+const BUCKET_COLOR = { complete: '#229A82', unfulfilled: '#C0392B', non_urgent: '#4A7BA6', pending: '#E0A72E', other: '#8891A0' };
+
+function metricValue(list) { return viewMode === 'lines' ? list.length : sumQty(list); }
+function sumQty(list) { return list.reduce((s, r) => s + (r.quantity || 0), 0); }
+// "Every individual pack or care sent" — counts actual delivered
+// quantity, including partial deliveries from a part-supply parent
+// even before its remainder (child) completes.
+function itemsFulfilled(list) {
+  return list.reduce((sum, r) => {
+    if (r.status === 'complete') return sum + (r.quantity || 0);
+    if (r.status === 'part_supplied') return sum + (r.supplied_qty || 0);
+    return sum;
+  }, 0);
+}
+function hoursBetween(a, b) { return (new Date(b) - new Date(a)) / 3600000; }
+function avg(arr) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0; }
+function median(arr) {
+  if (!arr.length) return 0;
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+async function fetchFilteredOrders(from, to) {
+  if (drugFilterActive && currentDrugs.length === 0) return [];
+
+  let wardIds = null;
+  if (currentWardIds.length) {
+    wardIds = currentWardIds;
+  } else if (currentSiteIds.length) {
+    wardIds = wards.filter(w => currentSiteIds.includes(w.site_id)).map(w => w.id);
+  }
+
+  const pageSize = 1000;
+  let allRows = [], page = 0;
+  while (true) {
+    let q = sb.from('orders').select('id, ward_id, session_id, medicine_name, quantity, supplied_qty, status, order_type, created_at, processed_at, supplied_at, out_of_stock_at, unfulfilled_marked_at, parent_order_id')
+      .gte('created_at', from.toISOString()).lte('created_at', to.toISOString())
+      .order('created_at').range(page * pageSize, page * pageSize + pageSize - 1);
+    if (wardIds) q = q.in('ward_id', wardIds);
+    if (drugFilterActive) q = q.in('medicine_name', currentDrugs);
+    const { data, error } = await q;
+    if (error) { toast(error.message, true); break; }
+    allRows = allRows.concat(data || []);
+    if (!data || data.length < pageSize) break;
+    page++;
+  }
+  return allRows;
+}
+
+function destroyCharts() { Object.values(charts).forEach(c => c?.destroy()); charts = {}; }
+
+function renderWardChecklist() {
+  const el = document.getElementById('ins-ward-checklist');
+  if (!currentSiteIds.length) { el.innerHTML = `<span class="muted">Tick a site above to narrow by ward — leave sites unticked to include every ward.</span>`; return; }
+  const options = wards.filter(w => currentSiteIds.includes(w.site_id));
+  if (!options.length) { el.innerHTML = `<span class="muted">No wards at the selected site(s).</span>`; return; }
+  el.innerHTML = options.map(w => `<label><input type="checkbox" class="ins-ward-cb" value="${w.id}" ${currentWardIds.includes(w.id) ? 'checked' : ''}>${esc(w.name)} <span class="muted">(${esc(siteName(w.site_id))})</span></label>`).join('');
+}
+
+async function renderInsights() {
+  const body = document.getElementById('body');
+  await refreshSitesWards();
+
+  let drugOptions = [];
+  const scopeWardIds = currentWardIds.length ? currentWardIds : (currentSiteIds.length ? wards.filter(w => currentSiteIds.includes(w.site_id)).map(w => w.id) : null);
+  if (scopeWardIds) {
+    const { data } = scopeWardIds.length ? await sb.from('blist_items').select('medicine_name').in('ward_id', scopeWardIds) : { data: [] };
+    drugOptions = [...new Set((data || []).map(r => r.medicine_name))].sort();
+  } else {
+    const { data } = await sb.from('blist_items').select('medicine_name');
+    drugOptions = [...new Set((data || []).map(r => r.medicine_name))].sort();
+  }
+
+  body.innerHTML = `
+    <div class="card">
+      <h2>Filters</h2>
+      <div class="row">
+        <div><label>Granularity</label><select id="ins-gran">
+          <option value="day" ${currentGranularity === 'day' ? 'selected' : ''}>By day (last 30 days)</option>
+          <option value="month" ${currentGranularity === 'month' ? 'selected' : ''}>By month (last 12 months)</option>
+          <option value="quarter" ${currentGranularity === 'quarter' ? 'selected' : ''}>By quarter (last 8 quarters)</option>
+        </select></div>
+        <div><label>View as</label><select id="ins-viewmode">
+          <option value="lines" ${viewMode === 'lines' ? 'selected' : ''}>Order lines (e.g. Drug A x 3 packs = 1 line)</option>
+          <option value="items" ${viewMode === 'items' ? 'selected' : ''}>Items requested (packs) (e.g. Drug A x 3 packs = 3 items)</option>
+        </select></div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <div>
+          <label>Sites <span class="muted" style="font-weight:400;">(tick one or more — leave unticked for every site, combined as one)</span></label>
+          <div class="checklist" id="ins-site-checklist">${sites.map(s => `<label><input type="checkbox" class="ins-site-cb" value="${s.id}" ${currentSiteIds.includes(s.id) ? 'checked' : ''}>${esc(s.name)}</label>`).join('')}</div>
+        </div>
+        <div>
+          <label>Wards <span class="muted" style="font-weight:400;">(optional — narrows within ticked sites)</span></label>
+          <div class="checklist" id="ins-ward-checklist"></div>
+        </div>
+      </div>
+      <div style="margin-top:10px;">
+        <label>Drug <span class="muted" style="font-weight:400;">(search a drug name, then untick any pack sizes you don't want — leave the search empty for all drugs)</span></label>
+        <input type="text" id="ins-drug-search" placeholder="e.g. apixaban" autocomplete="off" />
+        <div class="checklist" id="ins-drug-checklist" style="margin-top:8px;"></div>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <div><label>Custom from (optional)</label><input type="date" id="ins-from" value="${customFrom || ''}" /></div>
+        <div><label>Custom to (optional)</label><input type="date" id="ins-to" value="${customTo || ''}" /></div>
+        <div style="display:flex; align-items:flex-end;"><button class="btn magenta" id="ins-apply" style="margin-top:auto;">Apply</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Dashboard <span class="muted" style="font-weight:400; font-size:12px;">(show or hide sections below)</span></h2>
+      <div class="checklist" id="ins-section-toggles" style="flex-direction:row; flex-wrap:wrap; max-height:none;"></div>
+      <button class="btn ghost small" id="ins-export" style="margin-top:12px;">Export to Excel</button>
+    </div>
+    <div id="ins-summary" class="row"></div>
+    <div id="section-daily" class="card">
+      <h2>Today's snapshot <span class="muted" style="font-weight:400; font-size:12px;">(live — updates automatically)</span></h2>
+      <p class="muted">Cutoff-aware — an order placed after cutoff targets tomorrow's working day, so it won't appear here until then. This section reflects today across the whole system, independent of the filters above.</p>
+      <div class="row">
+        <div style="flex:1; min-width:260px;"><canvas id="ins-snapshot-pie" height="200"></canvas></div>
+        <div style="flex:1; min-width:260px; display:flex; flex-direction:column; gap:10px;" id="ins-snapshot-stats"></div>
+      </div>
+    </div>
+    <div id="section-volume" class="card"><h2>Volume by period</h2><canvas id="chart-volume" height="110"></canvas></div>
+    <div class="row">
+      <div id="section-status" class="card" style="flex:1;"><h2>Status composition</h2><canvas id="chart-status" height="260"></canvas></div>
+      <div id="section-drugs" class="card" style="flex:1;"><h2>Top drugs by volume</h2><canvas id="chart-drugs" height="260"></canvas></div>
+    </div>
+    <div id="section-duration" class="row">
+      <div class="card" style="flex:1;"><h2>Out of stock → completion time</h2><canvas id="chart-oos-time" height="200"></canvas></div>
+      <div class="card" style="flex:1;"><h2>Part order → completion time</h2><canvas id="chart-part-time" height="200"></canvas></div>
+    </div>
+    <div id="section-breach" class="card">
+      <h2>Unfulfilled breach thresholds</h2>
+      <p class="muted">Of everything sent in this period, how many were still unfulfilled once each threshold had passed — either because they took longer to resolve, or because they're still open now.</p>
+      <div id="ins-breach-table"></div>
+    </div>
+    <div id="section-trends" class="card">
+      <h2>Adhoc order trends</h2>
+      <p class="muted">Identifies which adhoc items are being requested most, and when.</p>
+      <div class="row">
+        <div><label>Drug</label><select id="ins-trend-drug"><option value="">All adhoc drugs</option></select></div>
+      </div>
+      <div id="ins-trend-top" style="margin-top:12px;"></div>
+      <div class="row" style="margin-top:14px;">
+        <div class="card" style="flex:1; box-shadow:none; border:1px solid var(--border-soft);"><h2>By day of week</h2><canvas id="chart-trend-dow" height="200"></canvas></div>
+        <div class="card" style="flex:1; box-shadow:none; border:1px solid var(--border-soft);"><h2>By hour of day</h2><canvas id="chart-trend-hour" height="200"></canvas></div>
+      </div>
+      <div class="card" style="box-shadow:none; border:1px solid var(--border-soft); margin-top:14px;"><h2>By ward</h2><canvas id="chart-trend-ward" height="180"></canvas></div>
+    </div>
+    <div id="section-compliance" class="card">
+      <h2>Top-up compliance</h2>
+      <p class="muted">Whether due top-ups are actually requested on schedule, and what's overdue or left unfinished.</p>
+      <div id="ins-compliance-summary" class="row"></div>
+      <div id="ins-compliance-table" style="margin-top:12px;"></div>
+    </div>`;
+
+  renderWardChecklist();
+  document.querySelectorAll('.ins-site-cb').forEach(cb => cb.onchange = () => {
+    currentSiteIds = [...document.querySelectorAll('.ins-site-cb:checked')].map(c => c.value);
+    currentWardIds = [];
+    renderWardChecklist();
+  });
+
+  function renderDrugChecklist(searchTerm) {
+    const checklistEl = document.getElementById('ins-drug-checklist');
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) { checklistEl.innerHTML = ''; return; }
+    const matches = drugOptions.filter(d => d.toLowerCase().includes(term));
+    if (!matches.length) { checklistEl.innerHTML = `<span class="muted">No drugs matching "${esc(searchTerm)}".</span>`; return; }
+    checklistEl.innerHTML = matches.map(d => `<label><input type="checkbox" class="ins-drug-cb" value="${esc(d)}" checked>${esc(d)}</label>`).join('');
+  }
+  document.getElementById('ins-drug-search').oninput = (e) => renderDrugChecklist(e.target.value);
+
+  document.getElementById('ins-apply').onclick = () => {
+    customFrom = document.getElementById('ins-from').value || null;
+    customTo = document.getElementById('ins-to').value || null;
+    currentWardIds = [...document.querySelectorAll('.ins-ward-cb:checked')].map(c => c.value);
+    const searchActive = document.getElementById('ins-drug-search').value.trim().length > 0;
+    drugFilterActive = searchActive;
+    currentDrugs = searchActive ? [...document.querySelectorAll('.ins-drug-cb:checked')].map(c => c.value) : [];
+    loadAndRender();
+  };
+  document.getElementById('ins-gran').onchange = (e) => { currentGranularity = e.target.value; customFrom = customTo = null; loadAndRender(); };
+  document.getElementById('ins-viewmode').onchange = (e) => { viewMode = e.target.value; renderSummaryAndVolumeOnly(); };
+
+  renderSectionToggles();
+  renderDailySnapshot('ins-snapshot-pie', 'ins-snapshot-stats');
+  document.getElementById('ins-export').onclick = exportInsightsToExcel;
+
+  await loadAndRender();
+}
+
+// ---------- SHOW/HIDE DASHBOARD ----------
+const SECTION_DEFS = [
+  { key: 'daily', label: "Today's snapshot", charts: [] },
+  { key: 'volume', label: 'Volume by period', charts: ['volume'] },
+  { key: 'status', label: 'Status composition', charts: ['status'] },
+  { key: 'drugs', label: 'Top drugs', charts: ['drugs'] },
+  { key: 'duration', label: 'Resolution times', charts: ['chart-oos-time', 'chart-part-time'] },
+  { key: 'breach', label: 'Unfulfilled breach', charts: [] },
+  { key: 'trends', label: 'Adhoc trends', charts: ['trendDow', 'trendHour', 'trendWard'] },
+  { key: 'compliance', label: 'Top-up compliance', charts: [] },
+];
+function loadSectionVisibility() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('insights-section-visibility') || '{}');
+    return SECTION_DEFS.reduce((acc, s) => { acc[s.key] = saved[s.key] !== false; return acc; }, {});
+  } catch { return SECTION_DEFS.reduce((acc, s) => { acc[s.key] = true; return acc; }, {}); }
+}
+function saveSectionVisibility(vis) {
+  try { localStorage.setItem('insights-section-visibility', JSON.stringify(vis)); } catch { /* ignore */ }
+}
+let sectionVisibility = loadSectionVisibility();
+
+function applySectionVisibility() {
+  SECTION_DEFS.forEach(s => {
+    const el = document.getElementById(`section-${s.key}`);
+    if (el) el.style.display = sectionVisibility[s.key] ? '' : 'none';
+  });
+}
+function renderSectionToggles() {
+  const el = document.getElementById('ins-section-toggles');
+  el.innerHTML = SECTION_DEFS.map(s => `<label><input type="checkbox" class="ins-section-cb" data-key="${s.key}" ${sectionVisibility[s.key] ? 'checked' : ''}>${esc(s.label)}</label>`).join('');
+  el.querySelectorAll('.ins-section-cb').forEach(cb => cb.onchange = () => {
+    const key = cb.dataset.key;
+    sectionVisibility[key] = cb.checked;
+    saveSectionVisibility(sectionVisibility);
+    applySectionVisibility();
+    if (cb.checked) {
+      // Chart.js can render at zero size while its container was
+      // display:none — resize once it's visible again so it fills
+      // its card properly rather than staying collapsed.
+      const def = SECTION_DEFS.find(s => s.key === key);
+      requestAnimationFrame(() => {
+        def?.charts.forEach(c => charts[c]?.resize());
+        if (key === 'daily') dailySnapshotChart?.resize();
+      });
+    }
+  });
+}
+
+let lastRows = [];
+let lastFrom = null, lastTo = null;
+
+async function loadAndRender() {
+  destroyCharts();
+  const { from: defFrom, to: defTo } = defaultRangeFor(currentGranularity);
+  const from = customFrom ? new Date(customFrom) : defFrom;
+  const to = customTo ? new Date(new Date(customTo).setHours(23, 59, 59, 999)) : defTo;
+  lastFrom = from; lastTo = to;
+
+  const rows = await fetchFilteredOrders(from, to);
+  lastRows = rows;
+
+  renderSummaryAndVolumeOnly();
+  renderStatusAndDrugsCharts(rows);
+  renderDurationCharts(rows);
+  renderBreachTable(rows);
+  await renderAdhocTrends(rows);
+  await renderComplianceSection(rows);
+  // Applied last, after every chart exists — so each one is always
+  // created while its container is properly sized, and hiding (if the
+  // saved preference says to) is purely a cosmetic step afterward.
+  applySectionVisibility();
+}
+
+// Split out so the Lines/Items toggle can re-render just the summary +
+// volume chart instantly, without re-fetching.
+function renderSummaryAndVolumeOnly() {
+  const rows = lastRows;
+
+  const sentList = rows;
+  const completeLines = rows.filter(r => statusBucket(r) === 'complete');
+  const unfulfilledList = rows.filter(r => statusBucket(r) === 'unfulfilled');
+  const itemsFulfilledCount = itemsFulfilled(rows);
+  const topupList = rows.filter(r => r.order_type === 'topup');
+  const adhocList = rows.filter(r => r.order_type === 'adhoc');
+
+  document.getElementById('ins-summary').innerHTML = [
+    ['Sent', metricValue(sentList) + (viewMode === 'items' ? ' packs' : ' lines'), 'var(--navy)'],
+    ['Full lines fulfilled', completeLines.length + ' lines', 'var(--teal)'],
+    ['Items fulfilled (packs sent)', itemsFulfilledCount + ' packs', 'var(--teal)'],
+    ['Ever out of stock / to follow', metricValue(unfulfilledList) + (viewMode === 'items' ? ' packs' : ' lines'), 'var(--red)'],
+    ['Total top-up requested', metricValue(topupList) + (viewMode === 'items' ? ' packs' : ' lines'), 'var(--honey-deep)'],
+    ['Total adhoc requested', metricValue(adhocList) + (viewMode === 'items' ? ' packs' : ' lines'), 'var(--honey-deep)'],
+  ].map(([label, val, color]) => `
+    <div class="card" style="text-align:center; flex:1;">
+      <div class="muted" style="font-size:12px; text-transform:uppercase; letter-spacing:.04em;">${label}</div>
+      <div style="font-size:26px; font-weight:700; color:${color}; margin-top:6px;">${val}</div>
+    </div>`).join('');
+
+  const periodKeys = new Set();
+  const volumeByPeriod = {};
+  rows.forEach(r => {
+    const key = periodKey(r.created_at, currentGranularity);
+    periodKeys.add(key);
+    volumeByPeriod[key] = volumeByPeriod[key] || { complete: [], unfulfilled: [], non_urgent: [], pending: [], other: [] };
+    volumeByPeriod[key][statusBucket(r)].push(r);
+  });
+  const sortedKeys = sortedPeriodKeys(periodKeys);
+  const labels = sortedKeys.map(k => periodLabel(k, currentGranularity));
+  const bucketNames = ['complete', 'unfulfilled', 'non_urgent', 'pending', 'other'];
+
+  charts.volume?.destroy();
+  charts.volume = new Chart(document.getElementById('chart-volume'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: bucketNames.map(b => ({
+        label: BUCKET_LABEL[b], backgroundColor: BUCKET_COLOR[b],
+        data: sortedKeys.map(k => metricValue(volumeByPeriod[k][b])),
+      })),
+    },
+    options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, title: { display: true, text: viewMode === 'items' ? 'Packs' : 'Order lines' } } } },
+  });
+}
+
+function renderStatusAndDrugsCharts(rows) {
+  const bucketNames = ['complete', 'unfulfilled', 'non_urgent', 'pending', 'other'];
+  const bucketRows = { complete: [], unfulfilled: [], non_urgent: [], pending: [], other: [] };
+  rows.forEach(r => bucketRows[statusBucket(r)].push(r));
+  charts.status = new Chart(document.getElementById('chart-status'), {
+    type: 'pie',
+    data: {
+      labels: bucketNames.map(b => BUCKET_LABEL[b]),
+      datasets: [{ data: bucketNames.map(b => bucketRows[b].length), backgroundColor: bucketNames.map(b => BUCKET_COLOR[b]) }],
+    },
+    options: { responsive: true },
+  });
+
+  const drugCounts = {};
+  rows.forEach(r => { drugCounts[r.medicine_name] = (drugCounts[r.medicine_name] || 0) + 1; });
+  const topDrugs = Object.entries(drugCounts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  charts.drugs = new Chart(document.getElementById('chart-drugs'), {
+    type: 'bar',
+    data: { labels: topDrugs.map(([n]) => n), datasets: [{ label: 'Orders', backgroundColor: '#229A82', data: topDrugs.map(([, c]) => c) }] },
+    options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } } },
+  });
+}
+
+function renderDurationCharts(rows) {
+  const oosRows = rows.filter(r => !r.parent_order_id && r.status === 'complete' && r.supplied_at && r.out_of_stock_at);
+  const oosByPeriod = {};
+  oosRows.forEach(r => {
+    const key = periodKey(r.supplied_at, currentGranularity);
+    (oosByPeriod[key] = oosByPeriod[key] || []).push(hoursBetween(r.out_of_stock_at, r.supplied_at));
+  });
+  const partRows = rows.filter(r => r.parent_order_id && r.status === 'complete' && r.supplied_at);
+  const partByPeriod = {};
+  partRows.forEach(r => {
+    const key = periodKey(r.supplied_at, currentGranularity);
+    (partByPeriod[key] = partByPeriod[key] || []).push(hoursBetween(r.created_at, r.supplied_at));
+  });
+
+  function durationChart(canvasId, byPeriod, emptyMsg) {
+    const keys = sortedPeriodKeys(new Set(Object.keys(byPeriod)));
+    const canvas = document.getElementById(canvasId);
+    if (!keys.length) {
+      canvas.parentElement.querySelectorAll('.empty').forEach(e => e.remove());
+      canvas.insertAdjacentHTML('afterend', `<div class="empty">${emptyMsg}</div>`);
+      return;
+    }
+    charts[canvasId] = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels: keys.map(k => periodLabel(k, currentGranularity)),
+        datasets: [
+          { label: 'Average (hrs)', borderColor: '#229A82', backgroundColor: '#229A82', data: keys.map(k => avg(byPeriod[k]).toFixed(1)), tension: 0.2 },
+          { label: 'Median (hrs)', borderColor: '#8B5CF6', backgroundColor: '#8B5CF6', data: keys.map(k => median(byPeriod[k]).toFixed(1)), tension: 0.2 },
+        ],
+      },
+      options: { responsive: true, scales: { y: { beginAtZero: true } } },
+    });
+  }
+  durationChart('chart-oos-time', oosByPeriod, 'No out-of-stock orders resolved in this period yet.');
+  durationChart('chart-part-time', partByPeriod, 'No part orders resolved in this period yet.');
+}
+
+// Breach thresholds: of everything EVER unfulfilled, how many had
+// still not resolved by each threshold — either because resolution
+// took longer than it, or because they're still open and have already
+// aged past it. Percentage is of TOTAL SENT in the period, matching
+// "500 requested, 25 unfulfilled within 24h = 5%".
+function renderBreachTable(rows) {
+  const everUnfulfilled = rows.filter(r => r.unfulfilled_marked_at);
+  const now = new Date();
+  const thresholds = [24, 48, 72];
+  const totalSent = metricValue(rows);
+
+  const results = thresholds.map(hrs => {
+    const breached = everUnfulfilled.filter(r => {
+      if (r.status === 'complete' && r.supplied_at) return hoursBetween(r.unfulfilled_marked_at, r.supplied_at) >= hrs;
+      return hoursBetween(r.unfulfilled_marked_at, now) >= hrs; // still open
+    });
+    return { hrs, list: breached };
+  });
+
+  document.getElementById('ins-breach-table').innerHTML = `
+    <table><thead><tr><th>Threshold</th><th>Breached</th><th>% of total sent</th></tr></thead><tbody>
+      ${results.map(r => {
+        const val = metricValue(r.list);
+        const pct = totalSent ? ((val / totalSent) * 100).toFixed(1) : '0.0';
+        return `<tr><td>Still unfulfilled after ${r.hrs}h</td><td>${val} ${viewMode === 'items' ? 'packs' : 'lines'}</td><td>${pct}%</td></tr>`;
+      }).join('')}
+    </tbody></table>`;
+}
+
+const DOW_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+async function renderAdhocTrends(rows) {
+  const adhocRows = rows.filter(r => r.order_type === 'adhoc');
+
+  const drugCounts = {};
+  adhocRows.forEach(r => { drugCounts[r.medicine_name] = (drugCounts[r.medicine_name] || 0) + 1; });
+  const topAdhoc = Object.entries(drugCounts).sort((a, b) => b[1] - a[1]).slice(0, 15);
+
+  const drugSelect = document.getElementById('ins-trend-drug');
+  const currentSelection = drugSelect.value;
+  drugSelect.innerHTML = `<option value="">All adhoc drugs</option>` + topAdhoc.map(([d]) => `<option value="${esc(d)}" ${d === currentSelection ? 'selected' : ''}>${esc(d)}</option>`).join('');
+  drugSelect.onchange = () => renderAdhocTrendCharts(adhocRows, drugSelect.value);
+
+  document.getElementById('ins-trend-top').innerHTML = !topAdhoc.length ? `<div class="empty">No adhoc orders in this period.</div>` : `
+    <table><thead><tr><th>Drug</th><th>Adhoc requests</th></tr></thead><tbody>
+      ${topAdhoc.map(([d, c]) => `<tr><td>${esc(d)}</td><td>${c}</td></tr>`).join('')}
+    </tbody></table>`;
+
+  renderAdhocTrendCharts(adhocRows, drugSelect.value);
+}
+
+function renderAdhocTrendCharts(adhocRows, selectedDrug) {
+  const scoped = selectedDrug ? adhocRows.filter(r => r.medicine_name === selectedDrug) : adhocRows;
+
+  const byDow = new Array(7).fill(0);
+  const byHour = new Array(24).fill(0);
+  const byWard = {};
+  scoped.forEach(r => {
+    const d = new Date(r.created_at);
+    byDow[d.getDay()]++;
+    byHour[d.getHours()]++;
+    byWard[r.ward_id] = (byWard[r.ward_id] || 0) + 1;
+  });
+  const wardEntries = Object.entries(byWard).sort((a, b) => b[1] - a[1]).slice(0, 12);
+
+  charts.trendDow?.destroy();
+  charts.trendDow = new Chart(document.getElementById('chart-trend-dow'), {
+    type: 'bar',
+    data: { labels: DOW_NAMES, datasets: [{ label: 'Requests', backgroundColor: '#1E8A73', data: byDow }] },
+    options: { responsive: true, plugins: { legend: { display: false } } },
+  });
+  charts.trendHour?.destroy();
+  charts.trendHour = new Chart(document.getElementById('chart-trend-hour'), {
+    type: 'bar',
+    data: { labels: Array.from({ length: 24 }, (_, h) => `${h}:00`), datasets: [{ label: 'Requests', backgroundColor: '#C9891A', data: byHour }] },
+    options: { responsive: true, plugins: { legend: { display: false } } },
+  });
+  charts.trendWard?.destroy();
+  charts.trendWard = new Chart(document.getElementById('chart-trend-ward'), {
+    type: 'bar',
+    data: { labels: wardEntries.map(([id]) => wardName(id) || id), datasets: [{ label: 'Requests', backgroundColor: '#123A5E', data: wardEntries.map(([, c]) => c) }] },
+    options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } } },
+  });
+}
+
+// ---------- EXCEL EXPORT ----------
+// Rebuilds every section's underlying numbers fresh from lastRows —
+// the same source every chart already draws from — rather than trying
+// to scrape rendered chart output, so the exported figures are
+// guaranteed to match what's on screen.
+function exportInsightsToExcel() {
+  const rows = lastRows;
+  if (!rows.length) { toast('Nothing to export for the current filters.', true); return; }
+  const wb = XLSX.utils.book_new();
+
+  // -- Summary --
+  const completeLines = rows.filter(r => statusBucket(r) === 'complete');
+  const unfulfilledList = rows.filter(r => statusBucket(r) === 'unfulfilled');
+  const topupList = rows.filter(r => r.order_type === 'topup');
+  const adhocList = rows.filter(r => r.order_type === 'adhoc');
+  const summaryAoa = [
+    ['Metric', 'Value'],
+    ['Sent', `${metricValue(rows)} ${viewMode === 'items' ? 'packs' : 'lines'}`],
+    ['Full lines fulfilled', `${completeLines.length} lines`],
+    ['Items fulfilled (packs sent)', `${itemsFulfilled(rows)} packs`],
+    ['Ever out of stock / to follow', `${metricValue(unfulfilledList)} ${viewMode === 'items' ? 'packs' : 'lines'}`],
+    ['Total top-up requested', `${metricValue(topupList)} ${viewMode === 'items' ? 'packs' : 'lines'}`],
+    ['Total adhoc requested', `${metricValue(adhocList)} ${viewMode === 'items' ? 'packs' : 'lines'}`],
+    [],
+    ['Filter', 'Setting'],
+    ['Granularity', currentGranularity],
+    ['View as', viewMode === 'items' ? 'Items requested (packs)' : 'Order lines'],
+    ['Sites', currentSiteIds.length ? currentSiteIds.map(id => siteName(id)).join(', ') : 'All sites'],
+    ['Wards', currentWardIds.length ? currentWardIds.map(id => wardName(id)).join(', ') : 'All wards in selected sites'],
+    ['Drug filter', drugFilterActive ? (currentDrugs.join(', ') || 'None selected') : 'All drugs'],
+    ['Custom from', customFrom || '(default range)'],
+    ['Custom to', customTo || '(default range)'],
+    ['Exported', new Date().toLocaleString('en-GB')],
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryAoa), 'Summary');
+
+  // -- Volume by period --
+  const periodKeys = new Set();
+  const volumeByPeriod = {};
+  rows.forEach(r => {
+    const key = periodKey(r.created_at, currentGranularity);
+    periodKeys.add(key);
+    volumeByPeriod[key] = volumeByPeriod[key] || { complete: [], unfulfilled: [], non_urgent: [], pending: [], other: [] };
+    volumeByPeriod[key][statusBucket(r)].push(r);
+  });
+  const sortedKeys = sortedPeriodKeys(periodKeys);
+  const bucketNames = ['complete', 'unfulfilled', 'non_urgent', 'pending', 'other'];
+  const volumeAoa = [
+    ['Period', ...bucketNames.map(b => BUCKET_LABEL[b]), 'Total'],
+    ...sortedKeys.map(k => {
+      const vals = bucketNames.map(b => metricValue(volumeByPeriod[k][b]));
+      return [periodLabel(k, currentGranularity), ...vals, vals.reduce((a, b) => a + b, 0)];
+    }),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(volumeAoa), 'Volume by period');
+
+  // -- Status composition --
+  const bucketRows = { complete: [], unfulfilled: [], non_urgent: [], pending: [], other: [] };
+  rows.forEach(r => bucketRows[statusBucket(r)].push(r));
+  const statusAoa = [
+    ['Status', 'Count'],
+    ...bucketNames.map(b => [BUCKET_LABEL[b], bucketRows[b].length]),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(statusAoa), 'Status composition');
+
+  // -- Top drugs --
+  const drugCounts = {};
+  rows.forEach(r => { drugCounts[r.medicine_name] = (drugCounts[r.medicine_name] || 0) + 1; });
+  const drugsAoa = [
+    ['Drug', 'Orders'],
+    ...Object.entries(drugCounts).sort((a, b) => b[1] - a[1]),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(drugsAoa), 'Top drugs');
+
+  // -- Resolution times --
+  const oosRows = rows.filter(r => !r.parent_order_id && r.status === 'complete' && r.supplied_at && r.out_of_stock_at);
+  const oosByPeriod = {};
+  oosRows.forEach(r => { const k = periodKey(r.supplied_at, currentGranularity); (oosByPeriod[k] = oosByPeriod[k] || []).push(hoursBetween(r.out_of_stock_at, r.supplied_at)); });
+  const partRows = rows.filter(r => r.parent_order_id && r.status === 'complete' && r.supplied_at);
+  const partByPeriod = {};
+  partRows.forEach(r => { const k = periodKey(r.supplied_at, currentGranularity); (partByPeriod[k] = partByPeriod[k] || []).push(hoursBetween(r.created_at, r.supplied_at)); });
+  const allDurationKeys = sortedPeriodKeys(new Set([...Object.keys(oosByPeriod), ...Object.keys(partByPeriod)]));
+  const durationAoa = [
+    ['Period', 'Out-of-stock avg (hrs)', 'Out-of-stock median (hrs)', 'Part-order avg (hrs)', 'Part-order median (hrs)'],
+    ...allDurationKeys.map(k => [
+      periodLabel(k, currentGranularity),
+      oosByPeriod[k] ? avg(oosByPeriod[k]).toFixed(1) : '',
+      oosByPeriod[k] ? median(oosByPeriod[k]).toFixed(1) : '',
+      partByPeriod[k] ? avg(partByPeriod[k]).toFixed(1) : '',
+      partByPeriod[k] ? median(partByPeriod[k]).toFixed(1) : '',
+    ]),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(durationAoa), 'Resolution times');
+
+  // -- Unfulfilled breach --
+  const everUnfulfilled = rows.filter(r => r.unfulfilled_marked_at);
+  const now = new Date();
+  const totalSent = metricValue(rows);
+  const breachAoa = [
+    ['Threshold', 'Breached', '% of total sent'],
+    ...[24, 48, 72].map(hrs => {
+      const breached = everUnfulfilled.filter(r => r.status === 'complete' && r.supplied_at ? hoursBetween(r.unfulfilled_marked_at, r.supplied_at) >= hrs : hoursBetween(r.unfulfilled_marked_at, now) >= hrs);
+      const val = metricValue(breached);
+      return [`Still unfulfilled after ${hrs}h`, `${val} ${viewMode === 'items' ? 'packs' : 'lines'}`, totalSent ? `${((val / totalSent) * 100).toFixed(1)}%` : '0.0%'];
+    }),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(breachAoa), 'Unfulfilled breach');
+
+  // -- Adhoc trends (respects whichever drug is currently selected in that section) --
+  const trendDrugSelect = document.getElementById('ins-trend-drug');
+  const selectedTrendDrug = trendDrugSelect ? trendDrugSelect.value : '';
+  const adhocRows = rows.filter(r => r.order_type === 'adhoc');
+  const scopedAdhoc = selectedTrendDrug ? adhocRows.filter(r => r.medicine_name === selectedTrendDrug) : adhocRows;
+  const adhocDrugCounts = {};
+  adhocRows.forEach(r => { adhocDrugCounts[r.medicine_name] = (adhocDrugCounts[r.medicine_name] || 0) + 1; });
+  const byDow = new Array(7).fill(0), byHour = new Array(24).fill(0), byWard = {};
+  scopedAdhoc.forEach(r => {
+    const d = new Date(r.created_at);
+    byDow[d.getDay()]++; byHour[d.getHours()]++;
+    byWard[r.ward_id] = (byWard[r.ward_id] || 0) + 1;
+  });
+  const trendsAoa = [
+    [`Adhoc trends${selectedTrendDrug ? ' — ' + selectedTrendDrug : ' — all adhoc drugs'}`],
+    [],
+    ['Top adhoc drugs', 'Requests'],
+    ...Object.entries(adhocDrugCounts).sort((a, b) => b[1] - a[1]),
+    [],
+    ['Day of week', 'Requests'],
+    ...DOW_NAMES.map((d, i) => [d, byDow[i]]),
+    [],
+    ['Hour of day', 'Requests'],
+    ...Array.from({ length: 24 }, (_, h) => [`${h}:00`, byHour[h]]),
+    [],
+    ['Ward', 'Requests'],
+    ...Object.entries(byWard).sort((a, b) => b[1] - a[1]).map(([id, c]) => [wardName(id) || id, c]),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(trendsAoa), 'Adhoc trends');
+
+  XLSX.writeFile(wb, `sara-insights-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+// ---------- TOP-UP COMPLIANCE ----------
+async function renderComplianceSection(rows) {
+  // Ward compliance shouldn't depend on which specific drug was in a
+  // submission — if the drug filter is active, rows here would be
+  // filtered to it and make an otherwise-compliant ward look like it
+  // missed its top-up just because that one drug wasn't ordered. Fetch
+  // an unfiltered-by-drug dataset for this section specifically when
+  // that's the case; otherwise reuse what's already been fetched.
+  let complianceRows = rows;
+  if (drugFilterActive && lastFrom && lastTo) {
+    let wardIds = null;
+    if (currentWardIds.length) wardIds = currentWardIds;
+    else if (currentSiteIds.length) wardIds = wards.filter(w => currentSiteIds.includes(w.site_id)).map(w => w.id);
+    let q = sb.from('orders').select('ward_id, session_id, status, order_type, created_at, parent_order_id')
+      .eq('order_type', 'topup').is('parent_order_id', null)
+      .gte('created_at', lastFrom.toISOString()).lte('created_at', lastTo.toISOString());
+    if (wardIds) q = q.in('ward_id', wardIds);
+    const { data } = await q;
+    complianceRows = data || [];
+  }
+
+  const scopeWards = currentWardIds.length
+    ? wards.filter(w => currentWardIds.includes(w.id))
+    : (currentSiteIds.length ? wards.filter(w => currentSiteIds.includes(w.site_id)) : wards);
+
+  const topupRows = complianceRows.filter(r => r.order_type === 'topup' && !r.parent_order_id);
+  const sessionMap = {};
+  topupRows.forEach(r => {
+    sessionMap[r.session_id] = sessionMap[r.session_id] || { ward_id: r.ward_id, created_at: r.created_at, lines: [] };
+    sessionMap[r.session_id].lines.push(r);
+  });
+  const sessions = Object.values(sessionMap);
+
+  const nonScheduledRequests = sessions.filter(s => {
+    const ward = wards.find(w => w.id === s.ward_id);
+    if (!ward) return false;
+    const dayName = WEEKDAY_NAMES[new Date(s.created_at).getDay()];
+    return !(ward.topup_days || []).includes(dayName);
+  });
+
+  const notCompleted = sessions.filter(s => !s.lines.every(l => l.status === 'complete'));
+
+  const sessionsByWardDate = {};
+  sessions.forEach(s => { sessionsByWardDate[`${s.ward_id}|${isoDate(new Date(s.created_at))}`] = true; });
+
+  const missed = [];
+  if (lastFrom && lastTo) {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    scopeWards.forEach(w => {
+      if (!w.topup_days?.length) return;
+      const cursor = new Date(lastFrom); cursor.setHours(0, 0, 0, 0);
+      const endDate = new Date(Math.min(lastTo.getTime(), today.getTime() - 86400000)); // never flag today — it isn't over yet
+      while (cursor <= endDate) {
+        const dayName = WEEKDAY_NAMES[cursor.getDay()];
+        if (w.topup_days.includes(dayName) && !sessionsByWardDate[`${w.id}|${isoDate(cursor)}`]) {
+          missed.push({ ward: w.name, date: isoDate(cursor) });
+        }
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    });
+  }
+
+  document.getElementById('ins-compliance-summary').innerHTML = [
+    ['Top-up sessions in range', sessions.length, 'var(--navy)'],
+    ['Requested on non-topup days', nonScheduledRequests.length, 'var(--red)'],
+    ['Missed due dates', missed.length, 'var(--red)'],
+    ['Submitted but not completed', notCompleted.length, 'var(--amber)'],
+  ].map(([label, val, color]) => `
+    <div class="card" style="text-align:center; flex:1;">
+      <div class="muted" style="font-size:12px; text-transform:uppercase; letter-spacing:.04em;">${label}</div>
+      <div style="font-size:24px; font-weight:700; color:${color}; margin-top:6px;">${val}</div>
+    </div>`).join('');
+
+  const issueRows = [
+    ...nonScheduledRequests.map(s => ['Non-scheduled request', wardName(s.ward_id), fmtDate(s.created_at)]),
+    ...missed.map(m => ['Missed due date', m.ward, new Date(m.date).toLocaleDateString('en-GB')]),
+    ...notCompleted.map(s => ['Submitted but not completed', wardName(s.ward_id), fmtDate(s.created_at)]),
+  ];
+  document.getElementById('ins-compliance-table').innerHTML = !issueRows.length
+    ? `<div class="empty">No compliance issues in this period.</div>`
+    : `<table><thead><tr><th>Issue</th><th>Ward</th><th>Date</th></tr></thead><tbody>
+        ${issueRows.map(([issue, ward, date]) => `<tr><td>${esc(issue)}</td><td>${esc(ward)}</td><td>${esc(date)}</td></tr>`).join('')}
+      </tbody></table>`;
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => ['developer', 'superuser'].includes(pr.role) });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderInsights();
+})();
+</script>
+</body>
+</html>

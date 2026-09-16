@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Session detail</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="session-detail.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+const sessionId = new URLSearchParams(window.location.search).get('id');
+
+function openPartOrderModal(order) {
+  openModal(`
+    <h3>Part order — ${esc(order.medicine_name)}</h3>
+    <p class="muted" style="margin-top:-6px;">${esc(wardName(order.ward_id))} ordered ${order.quantity}. How many packs are you sending now?</p>
+    <label>Packs supplied now</label>
+    <input type="number" id="part-qty" min="1" max="${order.quantity - 1}" value="1" />
+    <p class="muted" id="part-remainder" style="margin-top:8px;"></p>
+    <div class="modal-error" id="part-error"></div>
+    <div class="actions">
+      <button class="btn ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn magenta" id="part-confirm">Confirm part order</button>
+    </div>`);
+
+  const qtyInput = document.getElementById('part-qty');
+  const remainderEl = document.getElementById('part-remainder');
+  const updateRemainder = () => {
+    const q = parseInt(qtyInput.value, 10) || 0;
+    const remainder = order.quantity - q;
+    remainderEl.textContent = remainder > 0 ? `${remainder} will be recorded as "to follow" for this ward.` : '';
+  };
+  qtyInput.oninput = updateRemainder;
+  updateRemainder();
+
+  document.getElementById('part-confirm').onclick = async () => {
+    const errEl = document.getElementById('part-error');
+    const suppliedQty = parseInt(qtyInput.value, 10);
+    if (!suppliedQty || suppliedQty < 1 || suppliedQty >= order.quantity) {
+      errEl.textContent = `Enter a number between 1 and ${order.quantity - 1}.`;
+      return;
+    }
+    const { error } = await sb.rpc('create_part_supply', { parent_order: order.id, supplied_quantity: suppliedQty });
+    if (error) { errEl.textContent = error.message; return; }
+
+    closeModal();
+    toast(`${suppliedQty} supplied now, ${order.quantity - suppliedQty} to follow.`);
+    renderSessionDetail();
+  };
+}
+
+async function processOrder(id, status, reason) {
+  const { error } = await sb.rpc('process_order', { target_order: id, new_status: status, reason: reason || null });
+  if (error) return toast(error.message, true);
+  toast(`Order marked ${statusLabel(status).toLowerCase()}.`);
+  renderSessionDetail();
+}
+
+async function renderSessionDetail() {
+  const body = document.getElementById('body');
+  if (!sessionId) { body.innerHTML = `<div class="empty">No session specified.</div>`; return; }
+  const [{ data: session, error: sessErr }, { data: lines }] = await Promise.all([
+    sb.from('order_sessions').select('*').eq('id', sessionId).single(),
+    sb.from('orders').select('*').eq('session_id', sessionId).order('created_at'),
+  ]);
+  if (sessErr || !session) { body.innerHTML = `<div class="empty">Could not load this session \u2014 it may not exist, or you may not have access to it.</div>`; return; }
+
+  // RLS already restricts what's visible above (ward-access read for
+  // orders/order_sessions) \u2014 this just decides whether to show the
+  // processing actions (can_process) or a read-only view (a ward viewer
+  // checking their own submission's status).
+  const readOnly = !canProcess();
+
+  const dupWindowHours = parseFloat(systemSettings.duplicate_window_hours) || 48;
+  const pendingLines = (lines || []).filter(o => !o.parent_order_id && o.status === 'pending');
+  const dupEligible = new Set();
+  if (!readOnly && pendingLines.length) {
+    await Promise.all(pendingLines.map(async (o) => {
+      const since = new Date(new Date(o.created_at).getTime() - dupWindowHours * 3600000).toISOString();
+      const until = new Date(new Date(o.created_at).getTime() + dupWindowHours * 3600000).toISOString();
+      const { data: matches } = await sb.from('orders').select('id')
+        .eq('ward_id', o.ward_id).eq('medicine_name', o.medicine_name)
+        .neq('id', o.id).gte('created_at', since).lte('created_at', until).limit(1);
+      if (matches && matches.length) dupEligible.add(o.id);
+    }));
+  }
+
+  const nameById = await fetchNameMap([...(lines || []), { ordered_by: session.submitted_by }]);
+  const backLink = readOnly
+    ? `<a class="btn ghost small" href="order-history.html" style="margin-bottom:14px; display:inline-block;">\u2190 Back to order history</a>`
+    : `<a class="btn ghost small" href="sessions.html" style="margin-bottom:14px; display:inline-block;">\u2190 Back to pending orders</a>`;
+
+  body.innerHTML = `
+    ${backLink}
+    <div class="card">
+      <h2>${esc(wardName(session.ward_id))} \u2014 submitted ${fmtDate(session.created_at)}</h2>
+      <p class="muted" style="margin-top:-8px;">By ${esc(nameById[session.submitted_by] || '\u2014')} \u00b7 ${session.order_type === 'topup' ? 'Top-up order' : 'Adhoc order'}</p>
+      <table><thead><tr><th></th><th>Medicine</th><th>Qty</th><th>Status</th>${readOnly ? '' : '<th></th>'}</tr></thead><tbody>
+        ${(lines || []).filter(o => !o.parent_order_id).map(o => {
+          const approvedAttr = o.approved_by ? attribution('Approved by', nameById[o.approved_by], o.approved_at) : '';
+          const processedAttr = o.processed_by ? attribution(statusLabel(o.status) + ' by', nameById[o.processed_by], o.processed_at) : '';
+          const dispositionAttr = o.disposition_reason ? `<div class="attribution">Reason: ${esc(o.disposition_reason)}</div>` : '';
+          return `<tr id="line-${o.id}" ${o.approved_by ? 'style="background:var(--teal-pale);"' : ''}>
+          <td>${o.status === 'pending' ? turnaroundDot(o) : ''}</td>
+          <td>${esc(o.medicine_name)} ${o.approved_by ? `<span class="badge complete">\u2713 Pharmacist-approved</span>` : ''}${approvedAttr}${processedAttr}${dispositionAttr}</td>
+          <td>${o.quantity}</td>
+          <td><span class="badge ${o.status}">${statusLabel(o.status)}</span></td>
+          ${readOnly ? '' : `<td style="text-align:right; white-space:nowrap;">
+            ${o.status === 'pending' ? `
+              <button class="btn small ghost" data-complete="${o.id}">Mark complete</button>
+              ${o.quantity > 1 ? `<button class="btn small ghost" data-part="${o.id}">Part order</button>` : ''}
+              ${dupEligible.has(o.id) ? `<button class="btn small ghost" data-dup="${o.id}">Mark duplicate</button>` : ''}
+              ${['pharmacist', 'lead_pharmacist'].includes(profile.role) ? `<button class="btn small ghost" data-nonurgent="${o.id}">Non-urgent</button>` : ''}
+              <button class="btn small danger" data-oos="${o.id}">Out of stock</button>
+            ` : `<span class="muted">Actioned</span>`}
+          </td>`}
+        </tr>`;
+        }).join('')}
+      </tbody></table>
+      ${statusLegendHtml()}
+    </div>`;
+
+  if (readOnly) return;
+
+  body.querySelectorAll('[data-complete]').forEach(b => b.onclick = () => processOrder(b.dataset.complete, 'complete'));
+  body.querySelectorAll('[data-oos]').forEach(b => b.onclick = () => processOrder(b.dataset.oos, 'out_of_stock'));
+  body.querySelectorAll('[data-dup]').forEach(b => b.onclick = () => {
+    const order = lines.find(o => o.id === b.dataset.dup);
+    openModal(`<h3>Mark as duplicate order</h3>
+      <p class="muted">${esc(order.medicine_name)} (${order.quantity}). This ward will see it flagged as a duplicate rather than fulfilled.</p>
+      <label>Reason (required)</label>
+      <input type="text" id="dup-reason" placeholder="e.g. Matches the order submitted 20 minutes earlier" />
+      <div class="modal-error" id="dup-reason-error"></div>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn danger" id="dup-confirm">Mark duplicate</button></div>`);
+    document.getElementById('dup-confirm').onclick = async () => {
+      const reason = document.getElementById('dup-reason').value.trim();
+      const errEl = document.getElementById('dup-reason-error');
+      if (!reason) { errEl.textContent = 'A reason is required.'; return; }
+      const { error } = await sb.rpc('process_order', { target_order: order.id, new_status: 'duplicate', reason });
+      if (error) { errEl.textContent = error.message; return; }
+      closeModal();
+      toast('Order marked duplicate.');
+      renderSessionDetail();
+    };
+  });
+  body.querySelectorAll('[data-nonurgent]').forEach(b => b.onclick = () => {
+    const order = lines.find(o => o.id === b.dataset.nonurgent);
+    confirmDialog('Mark as non-urgent', `Mark ${esc(order.medicine_name)} (${order.quantity}) as non-urgent? It'll move to the Out of stock / to-follow queue for anyone processing to pick up later.`, 'Mark non-urgent', () => processOrder(order.id, 'non_urgent'));
+  });
+  body.querySelectorAll('[data-part]').forEach(b => b.onclick = () => openPartOrderModal(lines.find(o => o.id === b.dataset.part)));
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => !!pr.can_process || !!pr.can_order });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderSessionDetail();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Processed History</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="processed-history.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function loadProcessedHistory() {
+  const since = new Date(Date.now() - 48 * 3600000).toISOString();
+  const lookback = new Date(Date.now() - 7 * 24 * 3600000).toISOString();
+  const { data, error } = await sb.from("orders").select("*")
+    .gte("created_at", lookback)
+    .neq("status", "pending").neq("status", "pending_approval")
+    .order("created_at", { ascending: false });
+  if (error) return { error, rows: [] };
+  const rows = (data || [])
+    .map(o => ({ ...o, _actionedAt: o.processed_at || o.superseded_at || o.rejected_at || null }))
+    .filter(o => o._actionedAt && o._actionedAt >= since)
+    .sort((a, b) => new Date(b._actionedAt) - new Date(a._actionedAt));
+  return { error: null, rows };
+}
+
+async function renderProcessedHistory() {
+  const body = document.getElementById("body");
+  body.innerHTML = `
+    <div class="card">
+      <h2>Processed in the last 48 hours</h2>
+      <p class="muted">For a quick check when a ward calls asking whether something's been actioned. Covers every disposition — complete, out of stock, part-supplied, non-urgent, duplicate, superseded, and rejected.</p>
+      <div class="row">
+        <div><label>Search drug</label><input type="text" id="ph-drug" placeholder="Start typing a medicine name…" /></div>
+        <div><label>Ward</label><select id="ph-ward"><option value="">All wards</option></select></div>
+      </div>
+      <div id="ph-results">Loading…</div>
+    </div>`;
+
+  const { error, rows } = await loadProcessedHistory();
+  if (error) { document.getElementById("ph-results").innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+
+  const nameById = await fetchNameMap(rows);
+
+  const wardIdsPresent = [...new Set(rows.map(r => r.ward_id))];
+  const wardSelect = document.getElementById("ph-ward");
+  wardIdsPresent
+    .map(id => ({ id, name: wardName(id) }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .forEach(w => wardSelect.insertAdjacentHTML("beforeend", `<option value="${w.id}">${esc(w.name)}</option>`));
+
+  function renderRows() {
+    const drugQuery = document.getElementById("ph-drug").value.trim().toLowerCase();
+    const wardFilter = document.getElementById("ph-ward").value;
+    const filtered = rows.filter(r =>
+      (!drugQuery || r.medicine_name.toLowerCase().includes(drugQuery)) &&
+      (!wardFilter || r.ward_id === wardFilter)
+    );
+    const resultsEl = document.getElementById("ph-results");
+    if (!filtered.length) { resultsEl.innerHTML = `<div class="empty">No matching items in the last 48 hours.</div>`; return; }
+    resultsEl.innerHTML = `<table><thead><tr><th>Ward</th><th>Medicine</th><th>Qty</th><th>Status</th><th>Actioned</th><th>By</th></tr></thead><tbody>
+      ${filtered.map(r => `<tr>
+        <td>${esc(wardName(r.ward_id))}</td>
+        <td>${esc(r.medicine_name)}${fulfilledNote(r)}</td>
+        <td>${r.quantity}${r.status === "part_supplied" && r.supplied_qty != null ? ` <span class="muted">(${r.supplied_qty} supplied)</span>` : ""}</td>
+        <td><span class="badge ${r.status}">${statusLabel(r.status)}</span></td>
+        <td class="muted">${fmtDate(r._actionedAt)}</td>
+        <td class="muted">${esc(nameById[r.processed_by || r.rejected_by] || "—")}</td>
+      </tr>`).join("")}
+    </tbody></table>`;
+  }
+  renderRows();
+  document.getElementById("ph-drug").oninput = renderRows;
+  document.getElementById("ph-ward").onchange = renderRows;
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => !!pr.can_process });
+  if (!p) return;
+  document.getElementById("main").innerHTML = "<div id='body'></div>";
+  renderProcessedHistory();
+  startAutoRefresh(renderProcessedHistory, null, 30000);
+})();
+</script>
+</body></script>
+</body></script>
+</body>
+</html>

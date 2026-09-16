@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Active Sessions</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="active-sessions.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderActiveSessions() {
+  const body = document.getElementById("body");
+  body.innerHTML = `
+    <div class="card">
+      <h2>Active now</h2>
+      <p class="muted">Anyone whose session has checked in within the last 3 minutes. A closed-without-logging-out tab just goes stale here rather than looking permanently online.</p>
+      <div id="active-now">Loading…</div>
+    </div>
+    <div class="card">
+      <h2>Login / logout history</h2>
+      <p class="muted">Most recent 100 events across all logins.</p>
+      <div id="login-history">Loading…</div>
+    </div>`;
+
+  const { data: names } = await sb.rpc("staff_display_names");
+  const nameById = Object.fromEntries((names || []).map(n => [n.id, n.full_name]));
+
+  const activeCutoff = new Date(Date.now() - 3 * 60000).toISOString();
+  const { data: sessions, error: sessErr } = await sb.from("active_sessions").select("*")
+    .gte("last_seen_at", activeCutoff).is("revoked_at", null).order("last_seen_at", { ascending: false });
+  const activeEl = document.getElementById("active-now");
+  if (sessErr) { activeEl.innerHTML = `<div class="empty">${esc(sessErr.message)}</div>`; }
+  else if (!sessions?.length) { activeEl.innerHTML = `<div class="empty">Nobody is currently active.</div>`; }
+  else {
+    activeEl.innerHTML = `<table><thead><tr><th>User</th><th>Last seen</th><th></th></tr></thead><tbody>
+      ${sessions.map(s => `<tr>
+        <td>${esc(nameById[s.user_id] || s.user_id)}</td>
+        <td class="muted">${fmtDate(s.last_seen_at)}</td>
+        <td style="text-align:right;">${s.user_id !== profile.id ? `<button class="btn small danger" data-kick="${s.user_id}">End session</button>` : `<span class="muted">This is you</span>`}</td>
+      </tr>`).join("")}
+    </tbody></table>`;
+    activeEl.querySelectorAll("[data-kick]").forEach(b => b.onclick = () => {
+      const targetId = b.dataset.kick;
+      const targetName = nameById[targetId] || targetId;
+      confirmDialog("End this session", `End ${esc(targetName)}'s active session? They'll be signed out and returned to the login page — this doesn't touch their password.`, "End session", async () => {
+        const { data: { session: s } } = await sb.auth.getSession();
+        try {
+          const res = await fetch(`${FN_BASE}/admin-force-logout`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${s.access_token}` },
+            body: JSON.stringify({ target_id: targetId }),
+          });
+          const out = await res.json();
+          if (!res.ok) throw new Error(out.error || "Failed to end session");
+          toast(`${targetName}'s session was ended.`);
+          renderActiveSessions();
+        } catch (e) { toast(e.message, true); }
+      }, true);
+    });
+  }
+
+  const { data: events, error: evErr } = await sb.from("login_events").select("*")
+    .order("created_at", { ascending: false }).limit(100);
+  const historyEl = document.getElementById("login-history");
+  if (evErr) { historyEl.innerHTML = `<div class="empty">${esc(evErr.message)}</div>`; return; }
+  if (!events?.length) { historyEl.innerHTML = `<div class="empty">No login activity recorded yet.</div>`; return; }
+  const EVENT_LABEL = { login: "Logged in", logout: "Logged out", forced_logout: "Session ended by admin" };
+  const EVENT_CLASS = { login: "complete", logout: "duplicate", forced_logout: "out_of_stock" };
+  historyEl.innerHTML = `<table><thead><tr><th>User</th><th>Event</th><th>When</th></tr></thead><tbody>
+    ${events.map(e => `<tr>
+      <td>${esc(nameById[e.user_id] || e.user_id)}</td>
+      <td><span class="badge ${EVENT_CLASS[e.event_type] || "duplicate"}">${EVENT_LABEL[e.event_type] || e.event_type}</span></td>
+      <td class="muted">${fmtDate(e.created_at)}</td>
+    </tr>`).join("")}
+  </tbody></table>`;
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => ["developer", "superuser"].includes(pr.role) });
+  if (!p) return;
+  document.getElementById("main").innerHTML = "<div id='body'></div>";
+  renderActiveSessions();
+})();
+</script>
+</body></script>
+</body>
+</html>

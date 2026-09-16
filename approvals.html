@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Above-max approvals</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="approvals.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderApprovals() {
+  const body = document.getElementById('body');
+  const { data, error } = await sb.from('orders').select('*').eq('status', 'pending_approval').order('created_at');
+  if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+
+  const { data: users } = await sb.rpc('staff_display_names');
+  const nameById = Object.fromEntries((users || []).map(u => [u.id, u.full_name]));
+
+  body.innerHTML = `<div class="card">
+    <h2>Above-max approvals</h2>
+    <p class="muted">Orders where a ward requested more than the stocklist's usual maximum. Approve as requested, or amend the quantity first.</p>
+    ${!data?.length ? `<div class="empty">Nothing awaiting approval.</div>` : `
+    <table><thead><tr><th>Ward</th><th>Medicine</th><th>Requested</th><th></th></tr></thead><tbody>
+      ${data.map(o => `<tr id="appr-row-${o.id}">
+        <td>${esc(wardName(o.ward_id))}</td>
+        <td>${esc(o.medicine_name)}${attribution('Requested by', nameById[o.ordered_by], o.created_at)}</td>
+        <td>${o.quantity}</td>
+        <td style="text-align:right; white-space:nowrap;">
+          <input type="number" min="1" id="appr-qty-${o.id}" value="${o.quantity}" style="width:60px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0; margin-right:8px;" />
+          <button class="btn small magenta" data-approve="${o.id}">Approve</button>
+          <button class="btn small danger" data-reject="${o.id}">Reject</button>
+        </td>
+      </tr>`).join('')}
+    </tbody></table>`}
+  </div>`;
+
+  body.querySelectorAll('[data-approve]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.approve;
+    const qtyInput = document.getElementById(`appr-qty-${id}`);
+    const quantity = Math.max(1, parseInt(qtyInput.value, 10) || 1);
+    const { error } = await sb.rpc('approve_order', { target_order: id, new_quantity: quantity });
+    if (error) return toast(error.message, true);
+    toast('Approved — now in the pending queue.');
+    renderApprovals();
+  });
+
+  body.querySelectorAll('[data-reject]').forEach(b => b.onclick = () => {
+    const id = b.dataset.reject;
+    const row = data.find(o => o.id === id);
+    openModal(`<h3>Reject order</h3>
+      <p class="muted">${esc(row.medicine_name)} (${row.quantity}) for ${esc(wardName(row.ward_id))}. This ward will see it flagged as rejected.</p>
+      <label>Reason (required)</label>
+      <input type="text" id="reject-reason" placeholder="e.g. Excessive quantity for this indication" />
+      <div class="modal-error" id="reject-reason-error"></div>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn danger" id="reject-confirm">Reject order</button></div>`);
+    document.getElementById('reject-confirm').onclick = async () => {
+      const reason = document.getElementById('reject-reason').value.trim();
+      const errEl = document.getElementById('reject-reason-error');
+      if (!reason) { errEl.textContent = 'A reason is required.'; return; }
+      const { error } = await sb.rpc('reject_order', { target_order: id, reason });
+      if (error) { errEl.textContent = error.message; return; }
+      closeModal();
+      toast('Order rejected.');
+      renderApprovals();
+    };
+  });
+}
+
+(async () => {
+  const p = await requireAuth({ require: () => canApproveOrders() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderApprovals();
+})();
+</script>
+</body>
+</html>

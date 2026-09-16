@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — Titles</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="titles.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderTitles() {
+  const body = document.getElementById('body');
+  body.innerHTML = `
+    <div class="card">
+      <h2>Add a title</h2>
+      <p class="muted">Titles are labels only — they carry no capability of their own. What an account can actually do is set entirely by the tickboxes on their login, on the Users page.</p>
+      <div class="row"><div><label>Title name</label><input type="text" id="new-title-name" placeholder="e.g. senior_nurse_practitioner" /></div></div>
+      <button class="btn magenta" style="margin-top:14px;" id="create-title-btn">Add title</button>
+    </div>
+    <div class="card"><h2>Titles</h2><div id="title-list">Loading…</div></div>`;
+
+  document.getElementById('create-title-btn').onclick = async () => {
+    const name = document.getElementById('new-title-name').value.trim();
+    if (!name) return toast('Enter a title name.', true);
+    if (['developer', 'superuser', 'governance'].includes(name)) {
+      return toast('That name is reserved for a protected tier and can\'t be used as a title.', true);
+    }
+    const { error } = await sb.from('titles').insert({ name });
+    if (error) return toast(error.message.includes('duplicate') ? 'That title already exists.' : error.message, true);
+    document.getElementById('new-title-name').value = '';
+    toast('Title added.');
+    loadTitleList();
+  };
+
+  await loadTitleList();
+}
+
+async function loadTitleList() {
+  const el = document.getElementById('title-list');
+  const { data: titleRows, error } = await sb.from('titles').select('*').order('name');
+  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!titleRows?.length) { el.innerHTML = `<div class="empty">No titles yet.</div>`; return; }
+
+  const { data: profileRows } = await sb.from('profiles').select('role');
+  const countByRole = {};
+  (profileRows || []).forEach(p => { countByRole[p.role] = (countByRole[p.role] || 0) + 1; });
+
+  el.innerHTML = `<table><thead><tr><th>Title</th><th>Accounts</th><th></th></tr></thead><tbody>
+    ${titleRows.map(t => `<tr>
+      <td>${esc(t.name)}</td>
+      <td class="muted">${countByRole[t.name] || 0}</td>
+      <td style="text-align:right;">
+        <button class="btn small ghost" data-rename="${t.id}" data-name="${esc(t.name)}">Rename</button>
+        <button class="btn small danger" data-delete="${t.id}" data-name="${esc(t.name)}">Delete</button>
+      </td>
+    </tr>`).join('')}
+  </tbody></table>`;
+
+  el.querySelectorAll('[data-rename]').forEach(b => b.onclick = () => {
+    openModal(`<h3>Rename title</h3><label>Name</label><input type="text" id="rn-input" value="${esc(b.dataset.name)}" />
+      <p class="muted" style="margin-top:6px; font-size:11.5px;">Any account currently holding this title will show the new name immediately — nothing about what they can do changes.</p>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="rn-save">Save</button></div>`);
+    document.getElementById('rn-save').onclick = async () => {
+      const newName = document.getElementById('rn-input').value.trim();
+      if (!newName) return;
+      const oldName = b.dataset.name;
+      const { error: titleErr } = await sb.from('titles').update({ name: newName }).eq('id', b.dataset.rename);
+      if (titleErr) { closeModal(); return toast(titleErr.message, true); }
+      const { error: profErr } = await sb.from('profiles').update({ role: newName }).eq('role', oldName);
+      closeModal();
+      if (profErr) return toast(`Title renamed, but updating existing accounts failed: ${profErr.message}`, true);
+      toast('Title renamed.');
+      loadTitleList();
+    };
+  });
+
+  el.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => {
+    const inUse = countByRole[b.dataset.name] || 0;
+    if (inUse > 0) {
+      return toast(`${inUse} account${inUse > 1 ? 's' : ''} still ${inUse > 1 ? 'hold' : 'holds'} this title — reassign them first.`, true);
+    }
+    confirmDialog('Delete this title?', `"${esc(b.dataset.name)}" isn\'t used by any account, so this is safe to remove.`, 'Delete', async () => {
+      const { error } = await sb.from('titles').delete().eq('id', b.dataset.delete);
+      if (error) return toast(error.message, true);
+      toast('Title deleted.');
+      loadTitleList();
+    }, true);
+  });
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => isDeveloper() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderTitles();
+})();
+</script></script>
+</body>
+</html>

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SARA — System settings</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="system-settings.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">SARA</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>async function renderSystemSettings() {
+  const body = document.getElementById('body');
+  body.innerHTML = `
+    <div class="card">
+      <h2>Processing cutoff times</h2>
+      <p class="muted">Adhoc orders placed before the cutoff are due same working day (green); after it, due the next working day (amber). Weekends and bank holidays always use the weekend/holiday cutoff.</p>
+      <div class="row">
+        <div><label>Weekdays (Mon\u2013Fri)</label><input type="time" id="cutoff-weekday" value="${processingCutoffs.weekday}" /></div>
+        <div><label>Weekends &amp; bank holidays</label><input type="time" id="cutoff-weekend" value="${processingCutoffs.weekend_or_holiday}" /></div>
+      </div>
+      <button class="btn magenta" style="margin-top:14px;" id="save-cutoffs">Save cutoff times</button>
+    </div>
+    ${isDeveloper() ? `
+    <div class="card">
+      <h2>Top-up countdown window</h2>
+      <p class="muted">Developer-only. Controls when the top-up reminder banner and countdown appear on a ward's ordering page the day before its top-up day.</p>
+      <div class="row">
+        <div><label>Window start</label><input type="time" id="topup-start" value="${systemSettings.topup_window_start}" /></div>
+        <div><label>Window end</label><input type="time" id="topup-end" value="${systemSettings.topup_window_end}" /></div>
+      </div>
+      <button class="btn magenta" style="margin-top:14px;" id="save-topup-window">Save top-up window</button>
+    </div>` : `
+    <div class="card"><p class="muted">The top-up countdown window is Developer-only.</p></div>`}
+    <div class="card">
+      <h2>Duplicate-order warning window</h2>
+      <p class="muted">How far back a ward checks for a recent matching order before warning "already ordered" — and how far back processing checks before allowing an item to be marked duplicate. Developer and Superuser can both set this.</p>
+      <label>Window (hours)</label>
+      <input type="number" min="1" id="dup-window" value="${systemSettings.duplicate_window_hours || '48'}" style="max-width:120px;" />
+      <button class="btn magenta" style="margin-top:14px;" id="save-dup-window">Save duplicate window</button>
+    </div>
+    <div class="card">
+      <h2>Overdue top-up preview &amp; prefill</h2>
+      <p class="muted">When a ward's top-up is due and wasn't submitted on time, this lets processing staff preview what a full top-up would look like (every stocklist item at max quantity), and lets whoever has ordering access to that ward pull that same list into a real order to submit. Nothing is auto-created — this only controls whether the option appears. Developer and Superuser can both set this.</p>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="overdue-toggle" style="width:auto;" ${systemSettings.overdue_topup_preview_enabled === 'true' ? 'checked' : ''} />Enabled</label>
+    </div>
+    <div class="card">
+      <h2>Trust logo</h2>
+      <p class="muted">Shown at the top of the printable PDF stocklist export. Upload a small image (PNG or JPG works best) \u2014 it's stored directly, no separate file hosting needed.</p>
+      ${systemSettings.trust_logo_data_url ? `<img src="${systemSettings.trust_logo_data_url}" alt="Current trust logo" style="max-height:70px; max-width:220px; display:block; margin-bottom:10px; border:1px solid var(--border); border-radius:6px; padding:6px;" />` : `<p class="muted" style="font-size:11.5px;">No logo set yet.</p>`}
+      <input type="file" id="logo-input" accept="image/png,image/jpeg" class="hidden" />
+      <button class="btn ghost small" id="logo-choose-btn">Choose image\u2026</button>
+      ${systemSettings.trust_logo_data_url ? `<button class="btn ghost small" id="logo-remove-btn">Remove logo</button>` : ''}
+    </div>
+  `;
+
+  document.getElementById('save-cutoffs').onclick = async () => {
+    const weekday = document.getElementById('cutoff-weekday').value;
+    const weekend = document.getElementById('cutoff-weekend').value;
+    if (!weekday || !weekend) return toast('Both cutoff times are required.', true);
+    const { error: e1 } = await sb.from('processing_cutoffs').update({ cutoff_time: weekday }).eq('day_type', 'weekday');
+    const { error: e2 } = await sb.from('processing_cutoffs').update({ cutoff_time: weekend }).eq('day_type', 'weekend_or_holiday');
+    if (e1 || e2) return toast((e1 || e2).message, true);
+    processingCutoffs.weekday = weekday;
+    processingCutoffs.weekend_or_holiday = weekend;
+    toast('Cutoff times updated.');
+  };
+
+  document.getElementById('save-dup-window').onclick = async () => {
+    const hours = parseInt(document.getElementById('dup-window').value, 10);
+    if (!hours || hours < 1) return toast('Enter a window of at least 1 hour.', true);
+    const { error } = await sb.from('system_settings').update({ value: String(hours) }).eq('key', 'duplicate_window_hours');
+    if (error) return toast(error.message, true);
+    systemSettings.duplicate_window_hours = String(hours);
+    toast('Duplicate-order window updated.');
+  };
+
+  document.getElementById('overdue-toggle').onchange = async (e) => {
+    const enabled = e.target.checked;
+    const { error } = await sb.from('system_settings').update({ value: String(enabled) }).eq('key', 'overdue_topup_preview_enabled');
+    if (error) { toast(error.message, true); e.target.checked = !enabled; return; }
+    systemSettings.overdue_topup_preview_enabled = String(enabled);
+    toast(enabled ? 'Overdue top-up preview enabled.' : 'Overdue top-up preview disabled.');
+  };
+
+  const topupBtn = document.getElementById('save-topup-window');
+  if (topupBtn) {
+    topupBtn.onclick = async () => {
+      const start = document.getElementById('topup-start').value;
+      const end = document.getElementById('topup-end').value;
+      if (!start || !end) return toast('Both window times are required.', true);
+      const { error: e1 } = await sb.from('system_settings').update({ value: start }).eq('key', 'topup_window_start');
+      const { error: e2 } = await sb.from('system_settings').update({ value: end }).eq('key', 'topup_window_end');
+      if (e1 || e2) return toast((e1 || e2).message, true);
+      systemSettings.topup_window_start = start;
+      systemSettings.topup_window_end = end;
+      toast('Top-up window updated.');
+    };
+  }
+
+  document.getElementById('logo-choose-btn').onclick = () => document.getElementById('logo-input').click();
+  document.getElementById('logo-input').onchange = async () => {
+    const file = document.getElementById('logo-input').files[0];
+    if (!file) return;
+    if (file.size > 1024 * 1024) return toast('Please choose an image under 1MB.', true);
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    const { error } = await sb.from('system_settings').update({ value: dataUrl }).eq('key', 'trust_logo_data_url');
+    if (error) return toast(error.message, true);
+    systemSettings.trust_logo_data_url = dataUrl;
+    toast('Trust logo updated.');
+    renderSystemSettings();
+  };
+
+  const logoRemoveBtn = document.getElementById('logo-remove-btn');
+  if (logoRemoveBtn) {
+    logoRemoveBtn.onclick = async () => {
+      const { error } = await sb.from('system_settings').update({ value: '' }).eq('key', 'trust_logo_data_url');
+      if (error) return toast(error.message, true);
+      systemSettings.trust_logo_data_url = '';
+      toast('Trust logo removed.');
+      renderSystemSettings();
+    };
+  }
+}
+
+(async () => {
+  const p = await requireAuth({ require: (pr) => ['developer', 'superuser'].includes(pr.role) });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderSystemSettings();
+})();
+</script>
+</body>
+</html>
