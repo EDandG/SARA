@@ -16,7 +16,21 @@ const SUPABASE_URL = 'https://ngsbqzceypktdtpzqtfp.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_-rZ17jyE1QJvaUHY4t4qWw_zKJUYLox';
 const FN_BASE = 'https://ngsbqzceypktdtpzqtfp.functions.supabase.co';
 
+// The only place this needs bumping — a small tag reads this and
+// shows on every page, including pre-login, so it's visible however
+// far someone's got. "v2" marks this as the version at the SARA
+// rebrand; bump on the next materially significant change, not every
+// small fix.
+const SARA_VERSION = 'v2';
+
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+
+(function renderVersionTag() {
+  const tag = document.createElement('div');
+  tag.textContent = `SARA ${SARA_VERSION}`;
+  tag.style.cssText = 'position:fixed; right:10px; bottom:8px; font-size:10.5px; color:#9aa3af; z-index:1; pointer-events:none; font-family:inherit;';
+  document.body.appendChild(tag);
+})();
 
 // ---------- ROLE MODEL ----------
 // Top tier is split into two: Developer (renamed from the original
@@ -519,7 +533,7 @@ function startNewOrderPolling() {
 function buildNavLinks() {
   const links = [];
   if (canOrder()) {
-    links.push({ href: 'order.html', label: 'Build new requisition', group: 'Ordering' });
+    links.push({ href: 'order.html', label: 'Make a new stock request', group: 'Ordering' });
     links.push({ href: 'order-history.html', label: 'Order history', group: 'Ordering' });
   }
   if (canProcess()) {

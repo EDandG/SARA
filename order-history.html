@@ -35,17 +35,24 @@
 async function renderWardHistory() {
   const body = document.getElementById('body');
   if (!myWards.length) { body.innerHTML = `<div class="card"><div class="empty">No wards have been allocated to your login yet.</div></div>`; return; }
-  const wardIds = myWards.map(w => w.id);
+
+  const requestedWardId = new URLSearchParams(window.location.search).get('ward');
+  const scoped = requestedWardId && myWards.some(w => w.id === requestedWardId);
+  const wardsInView = scoped ? myWards.filter(w => w.id === requestedWardId) : myWards;
+  const wardIds = wardsInView.map(w => w.id);
+  const titleText = scoped ? `Order history \u2014 ${esc(wardsInView[0].name)}` : `All orders \u2014 ${esc(myWards.map(w => w.name).join(', '))}`;
+
   const { data: sessionsData, error } = await sb.from('order_sessions').select('*').in('ward_id', wardIds)
     .order('created_at', { ascending: false }).limit(50);
   if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
-  if (!sessionsData?.length) { body.innerHTML = `<div class="card"><h2>All orders — ${esc(myWards.map(w => w.name).join(', '))}</h2><div class="empty">No orders yet.</div></div>`; return; }
+  const backLink = scoped ? `<a href="order.html?ward=${encodeURIComponent(requestedWardId)}" class="btn ghost small" style="margin-bottom:10px; display:inline-block;">\u2039 Back to ward</a><br/>` : '';
+  if (!sessionsData?.length) { body.innerHTML = `<div class="card">${backLink}<h2>${titleText}</h2><div class="empty">No orders yet.</div></div>`; return; }
 
   const { data: lines } = await sb.from('orders').select('*').in('session_id', sessionsData.map(s => s.id));
   const nameById = await fetchNameMap(lines || []);
-  body.innerHTML = `<div class="card"><h2>All orders — ${esc(myWards.map(w => w.name).join(', '))}</h2>
+  body.innerHTML = `<div class="card">${backLink}<h2>${titleText}</h2>
     ${sessionsData.map(s => {
-      const wardTag = myWards.length > 1 ? `<b>${esc(wardName(s.ward_id))}</b> \u00b7 ` : '';
+      const wardTag = wardsInView.length > 1 ? `<b>${esc(wardName(s.ward_id))}</b> \u00b7 ` : '';
       return renderSessionCard(s, lines || [], nameById).replace('<span>', `<span>${wardTag}`);
     }).join('')}
   </div>`;

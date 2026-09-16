@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SARA — Build new requisition</title>
+<title>SARA — Make a new stock request</title>
 <link rel="stylesheet" href="shared.css" />
 </head>
 <body data-page="order.html">
@@ -32,7 +32,7 @@
 <script src="vendor/supabase.js"></script>
 <script src="shared.js"></script>
 <script>
-let cart = [], orderWardId = null, orderType = 'adhoc';
+let cart = [], orderWardId = null, orderType = null;
 let topupLockHeldByMe = false, topupLockPollTimer = null, topupHeartbeatTimer = null;
 
 // Whole-ward lock: acquired the moment a top-up cart gets its first
@@ -137,8 +137,59 @@ function openTempStockModal() {
 async function renderWardOrder() {
   const body = document.getElementById('body');
   if (!myWards.length) { body.innerHTML = `<div class="card"><div class="empty">No wards have been allocated to your login yet. Contact an administrator.</div></div>`; return; }
-  if (!orderWardId || !myWards.find(w => w.id === orderWardId)) orderWardId = myWards[0].id;
 
+  // Single-ward accounts skip straight past the tile step — there's
+  // no real choice to make, so showing it would just be an extra click.
+  if (!orderWardId && myWards.length === 1) orderWardId = myWards[0].id;
+
+  if (!orderWardId) { renderWardTiles(); return; }
+  if (!orderType) { renderOrderTypeChoice(); return; }
+
+  await renderOrderBuilder();
+}
+
+function renderWardTiles() {
+  const body = document.getElementById('body');
+  body.innerHTML = `
+    <div class="card">
+      <h2>Make a new stock request</h2>
+      <p class="muted">Choose a ward to request stock for.</p>
+      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:12px; margin-top:14px;">
+        ${myWards.slice().sort((a, b) => a.name.localeCompare(b.name)).map(w => `
+          <button class="btn ghost" data-ward-tile="${w.id}" style="padding:20px 12px; font-size:14px; font-weight:600;">${esc(w.name)}</button>
+        `).join('')}
+      </div>
+    </div>`;
+  body.querySelectorAll('[data-ward-tile]').forEach(b => b.onclick = () => {
+    orderWardId = b.dataset.wardTile;
+    renderWardOrder();
+  });
+}
+
+function renderOrderTypeChoice() {
+  const body = document.getElementById('body');
+  const ward = myWards.find(w => w.id === orderWardId);
+  body.innerHTML = `
+    <div class="card">
+      ${myWards.length > 1 ? `<button class="btn ghost small" id="type-back" style="margin-bottom:10px;">\u2039 Change ward</button>` : ''}
+      <h2>${esc(ward?.name || 'Ward')}</h2>
+      <p class="muted">What are you requesting?</p>
+      <div style="display:flex; flex-direction:column; gap:10px; margin-top:14px; max-width:360px;">
+        <button class="btn magenta" data-order-type="adhoc" style="padding:16px; font-size:14px; font-weight:600;">Adhoc order</button>
+        <button class="btn magenta" data-order-type="topup" style="padding:16px; font-size:14px; font-weight:600;">Complete full top up request</button>
+        <a href="order-history.html?ward=${encodeURIComponent(orderWardId)}" class="btn ghost" style="padding:16px; font-size:14px; font-weight:600; text-align:center;">Order history</a>
+      </div>
+    </div>`;
+  const backBtn = document.getElementById('type-back');
+  if (backBtn) backBtn.onclick = () => { orderWardId = null; renderWardOrder(); };
+  body.querySelectorAll('[data-order-type]').forEach(b => b.onclick = () => {
+    orderType = b.dataset.orderType;
+    renderWardOrder();
+  });
+}
+
+async function renderOrderBuilder() {
+  const body = document.getElementById('body');
   const { data: items, error } = await sb.from('blist_items').select('*').eq('ward_id', orderWardId).order('medicine_name');
   if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
 
@@ -159,18 +210,25 @@ async function renderWardOrder() {
     showOverdueFillOption = await isWardOverdueForTopup(orderWardId);
   }
 
+  const goBack = async () => {
+    if (cart.length) {
+      confirmDialog('Change ward or order type', 'This will discard the items added so far. Continue?', 'Discard and go back', async () => {
+        cart = []; await releaseTopupLock(orderWardId); orderWardId = null; orderType = null; renderWardOrder();
+      }, true);
+    } else {
+      await releaseTopupLock(orderWardId);
+      orderWardId = null;
+      orderType = null;
+      renderWardOrder();
+    }
+  };
+
   body.innerHTML = `
     <div id="topup-banner-mount"></div>
     ${lockedOut ? `<div class="card" style="border-color:var(--amber);"><p style="margin:0; color:var(--amber); font-weight:600;">⏳ ${esc(lockHolderName)} is currently building this ward's top-up order. Ordering is paused for everyone else here until they submit or cancel it — this'll clear automatically, no need to refresh.</p></div>` : ''}
     <div class="card">
-      <h2>Build new requisition</h2>
-      ${myWards.length > 1 ? `<label>Ward</label>
-        <select id="order-ward" style="margin-bottom:14px;" ${lockedOut ? 'disabled' : ''}>${myWards.map(w => `<option value="${w.id}" ${w.id === orderWardId ? 'selected' : ''}>${esc(w.name)}</option>`).join('')}</select>` : ''}
-      <label>Order type</label>
-      <div style="display:flex; gap:16px; margin-bottom:10px;">
-        <label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="radio" name="order-type" value="adhoc" ${orderType === 'adhoc' ? 'checked' : ''} style="width:auto;" ${lockedOut ? 'disabled' : ''}> Adhoc order</label>
-        <label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="radio" name="order-type" value="topup" ${orderType === 'topup' ? 'checked' : ''} style="width:auto;" ${lockedOut ? 'disabled' : ''}> Top up order</label>
-      </div>
+      <button class="btn ghost small" id="order-back" style="margin-bottom:10px;">\u2039 Change ward or order type</button>
+      <h2>${esc(currentWard?.name || 'Ward')} \u2014 ${orderType === 'topup' ? 'Complete full top up request' : 'Adhoc order'}</h2>
       ${orderType === 'topup' ? `<p class="muted" style="margin-bottom:10px; font-size:12px;">Top up orders can't exceed each item's usual maximum — this keeps them from needing pharmacist approval.</p>` : ''}
       ${orderType === 'adhoc' && wardAllowsAboveMax ? `<p class="muted" style="margin-bottom:10px; font-size:12px;">You can order above a stocklist item's usual max on this ward. If you do, please let your pharmacist know you've requested an above-max order — it will need their approval before it's processed.</p>` : ''}
       ${topupDays.length ? `<p class="muted" style="margin-bottom:10px;">Your top up days are: <b>${esc(topupDays.join(', '))}</b></p>` : ''}
@@ -210,12 +268,9 @@ async function renderWardOrder() {
     if (!!stillLocked !== lockedOut) renderWardOrder();
   }, 20000);
 
+  document.getElementById('order-back').onclick = goBack;
+
   if (lockedOut) return;
-
-  const wardSelect = document.getElementById('order-ward');
-  if (wardSelect) wardSelect.onchange = async (e) => { await releaseTopupLock(orderWardId); orderWardId = e.target.value; cart = []; renderWardOrder(); };
-
-  document.querySelectorAll('input[name=order-type]').forEach(r => r.onchange = async (e) => { await releaseTopupLock(orderWardId); orderType = e.target.value; cart = []; renderWardOrder(); });
 
   const tempStockBtn = document.getElementById('ord-tempstock');
   if (tempStockBtn) tempStockBtn.onclick = () => openTempStockModal();
@@ -479,6 +534,8 @@ async function renderWardOrder() {
 (async () => {
   const p = await requireAuth({ require: (pr) => !!pr.can_order });
   if (!p) return;
+  const requestedWardId = new URLSearchParams(window.location.search).get('ward');
+  if (requestedWardId && myWards.some(w => w.id === requestedWardId)) orderWardId = requestedWardId;
   document.getElementById('main').innerHTML = '<div id="body"></div>';
   renderWardOrder();
 })();
