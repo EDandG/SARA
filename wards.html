@@ -79,7 +79,7 @@ async function renderWards() {
       ${fullAccess ? `<td><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="above-max-cb" data-ward="${w.id}" ${w.allow_above_max_adhoc !== false ? 'checked' : ''} style="width:auto;" />Allowed</label></td>
       <td><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="predictive-cb" data-ward="${w.id}" ${w.predictive_ordering_enabled ? 'checked' : ''} style="width:auto;" />Enabled</label></td>
       <td><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="substitution-cb" data-ward="${w.id}" ${w.allow_stock_substitution ? 'checked' : ''} style="width:auto;" />Enabled</label></td>` : ''}
-      <td style="text-align:right; white-space:nowrap;">
+      <td style="text-align:right;"><div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; max-width:330px; margin-left:auto;">
         ${fullAccess ? `
         <button class="btn small ghost" data-site="${w.id}">Set site</button>
         <button class="btn small ghost" data-topup="${w.id}">Top-up days</button>
@@ -87,7 +87,7 @@ async function renderWards() {
         ` : ''}
         <button class="btn small ghost" data-toggle="${w.id}">${w.active ? 'Deactivate' : 'Activate'}</button>
         ${fullAccess ? `<button class="btn small danger" data-del="${w.id}">Delete</button>` : ''}
-      </td>
+      </div></td>
     </tr>`).join('')}
   </tbody></table>`;
 
