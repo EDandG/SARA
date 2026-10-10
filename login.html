@@ -3,16 +3,41 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SARA — Log in</title>
+<title>Stock Req — Log in</title>
 <link rel="stylesheet" href="shared.css" />
+<style>
+  /* Login sits on the shared animated background (.bg-anim, shared.css). */
+  #login-screen{ background:transparent; }
+  .login-card{ background:rgba(255,255,255,.9); backdrop-filter:blur(6px); }
+
+  /* ED&G lockup (bottom-right) — fixed brand identity. */
+  .edg-brand{position:fixed;right:40px;bottom:28px;z-index:6;text-align:right;pointer-events:none;animation:edgFadeUp .6s .5s ease both;}
+  .edg-brand .mark{font-size:30px;font-weight:800;color:#1a2744;line-height:1;}
+  .edg-brand .mark .amp{color:#12a0ad;}
+  .edg-brand .mark .tm{font-size:12px;font-weight:700;vertical-align:super;margin-left:1px;}
+  .edg-brand .name{margin-top:3px;font-size:12.5px;font-weight:700;color:#1a2744;}
+  .edg-brand .rule{height:3px;margin-top:7px;border-radius:2px;overflow:hidden;display:flex;}
+  .edg-brand .rule span{flex:1;}
+  .edg-brand .rule span:nth-child(1){background:#1a2744;}
+  .edg-brand .rule span:nth-child(2){background:#12a0ad;}
+  .edg-brand .rule span:nth-child(3){background:#4caf50;}
+  @keyframes edgFadeUp{from{opacity:0;transform:translateY(16px);}to{opacity:1;transform:translateY(0);}}
+  @media (max-width:520px){.edg-brand{right:20px;bottom:18px;}.edg-brand .mark{font-size:24px;}}
+</style>
 </head>
 <body>
+
+<div class="edg-brand" aria-hidden="true">
+  <div class="mark">ED<span class="amp">&amp;</span>G<span class="tm">&trade;</span></div>
+  <div class="name">Evolve Digital &amp; Governance</div>
+  <div class="rule"><span></span><span></span><span></span></div>
+</div>
 
 <div id="login-screen">
   <div class="login-card">
     
-    <h1>SARA</h1>
-    <div class="tag">Stock Accountability, Requests &amp; Analytics</div>
+    <img id="login-logo" alt="" style="display:none; max-height:90px; max-width:240px; margin:0 auto 14px;" />
+    <h1>Stock Req</h1>
     <div class="tag" style="margin-top:2px;">Digital ward medicines stock management</div>
     <div class="tag" style="margin-top:2px; font-size:0.85em;">by ED&amp;G</div>
     <label>User ID</label>
@@ -30,6 +55,20 @@
 
 <script src="vendor/supabase.js"></script>
 <script src="shared.js"></script>
+<script>
+// Developer-set login logo (system_settings.login_logo_data_url, readable pre-login).
+(function () {
+  const img = document.getElementById('login-logo');
+  const show = (u) => { if (u) { img.src = u; img.style.display = 'block'; } else { img.style.display = 'none'; } };
+  try { show(localStorage.getItem('login_logo_cache')); } catch (e) {}
+  sb.from('system_settings').select('value').eq('key', 'login_logo_data_url').maybeSingle().then(({ data, error }) => {
+    if (error) return;
+    const v = (data && data.value) || '';
+    show(v);
+    try { v ? localStorage.setItem('login_logo_cache', v) : localStorage.removeItem('login_logo_cache'); } catch (e) {}
+  });
+})();
+</script>
 <script>
 // If already logged in (and not needing a reset), skip straight to home.
 sb.auth.getSession().then(async ({ data }) => {

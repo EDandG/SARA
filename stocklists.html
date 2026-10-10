@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SARA — Stocklists</title>
+<title>Stock Req — Stocklists</title>
 <link rel="stylesheet" href="shared.css" />
 <script src="vendor/jspdf.umd.min.js"></script>
 </head>
@@ -13,7 +13,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">SARA</div>
+        <div class="name">Stock Req</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -252,11 +252,24 @@ async function loadStockList() {
         ? `<input type="number" min="1" id="maxqty-${i.id}" value="${i.max_qty}" style="width:64px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" />`
         : i.max_qty}</td>
       ${canEdit ? `<td><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="reorder-approval-cb" data-item="${i.id}" ${i.requires_reorder_approval ? 'checked' : ''} style="width:auto;" />Flagged</label></td>
-      <td style="text-align:right;"><button class="btn small ghost" data-save-qty="${i.id}">Save</button></td>` : ''}
+      <td style="text-align:right; white-space:nowrap;">
+        <button class="btn small ghost" data-save-qty="${i.id}">Save</button>
+        <button class="btn small danger" data-remove-item="${i.id}" data-name="${esc(i.medicine_name)}">Remove</button>
+      </td>` : ''}
     </tr>`).join('')}
   </tbody></table>`;
 
   if (canEdit) {
+    listEl.querySelectorAll('[data-remove-item]').forEach(b => b.onclick = () => {
+      confirmDialog('Remove from this ward\u2019s stocklist?', `${esc(b.dataset.name)} will no longer appear on this ward\u2019s stocklist or in the drug builder for it. This doesn\u2019t remove it from the drug catalog itself \u2014 it can be added back here at any time.`, 'Remove', async () => {
+        const { error: delErr } = await sb.from('blist_items').delete().eq('id', b.dataset.removeItem);
+        if (delErr) return toast(delErr.message, true);
+        toast(`${b.dataset.name} removed from this ward\u2019s stocklist.`);
+        loadStockList();
+        loadStockHistory();
+        loadBuilder(ward_id);
+      }, true);
+    });
     listEl.querySelectorAll('[data-save-qty]').forEach(b => b.onclick = async () => {
       const id = b.dataset.saveQty;
       const maxInput = document.getElementById(`maxqty-${id}`);

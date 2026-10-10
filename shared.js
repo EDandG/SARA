@@ -1,5 +1,5 @@
 // ============================================================
-// SARA — shared.js
+// Stock Req — shared.js
 // Loaded via a classic <script> tag by every page, after the Supabase
 // UMD script. Deliberately NOT an ES module — `import` from a CDN can
 // hang silently on restrictive/corporate networks with no console
@@ -18,18 +18,29 @@ const FN_BASE = 'https://ngsbqzceypktdtpzqtfp.functions.supabase.co';
 
 // The only place this needs bumping — a small tag reads this and
 // shows on every page, including pre-login, so it's visible however
-// far someone's got. "v2" marks this as the version at the SARA
-// rebrand; bump on the next materially significant change, not every
+// far someone's got. "v3" marks the Stock Req name change;
+// bump on the next materially significant change, not every
 // small fix.
-const SARA_VERSION = 'v2';
+const APP_VERSION = 'v3';
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
 (function renderVersionTag() {
   const tag = document.createElement('div');
-  tag.textContent = `SARA ${SARA_VERSION}`;
+  tag.textContent = `Stock Req ${APP_VERSION}`;
   tag.style.cssText = 'position:fixed; right:10px; bottom:8px; font-size:10.5px; color:#9aa3af; z-index:1; pointer-events:none; font-family:inherit;';
   document.body.appendChild(tag);
+})();
+
+// ED&G animated background (triangles / orbs / light beams / particles) —
+// the original Pharmacy Portal look, styled in shared.css (.bg-anim).
+(function injectBgAnim() {
+  if (document.querySelector('.bg-anim')) return;
+  const bg = document.createElement('div');
+  bg.className = 'bg-anim';
+  bg.setAttribute('aria-hidden', 'true');
+  bg.innerHTML = "<div class=\"tri tri-a\"></div>\n<div class=\"tri tri-b\"></div>\n<div class=\"tri tri-c\"></div>\n<div class=\"tri tri-d\"></div>\n<div class=\"tri tri-e\"></div>\n<div class=\"tri tri-f\"></div>\n<div class=\"orb orb1\"></div>\n<div class=\"orb orb2\"></div>\n<div class=\"orb orb3\"></div>\n<div class=\"orb orb4\"></div>\n<div class=\"light-beam\" style=\"left:12%;height:60%;background:linear-gradient(to bottom,transparent,rgba(18,160,173,0.10),transparent);width:3px;animation:beamFall 14s linear infinite;animation-delay:0s\"></div>\n<div class=\"light-beam\" style=\"left:34%;height:75%;background:linear-gradient(to bottom,transparent,rgba(95,182,224,0.14),transparent);width:2px;animation:beamFall 18s linear infinite;animation-delay:-5s\"></div>\n<div class=\"light-beam\" style=\"left:62%;height:55%;background:linear-gradient(to bottom,transparent,rgba(76,175,80,0.10),transparent);width:4px;animation:beamFall 22s linear infinite;animation-delay:-9s\"></div>\n<div class=\"light-beam\" style=\"left:84%;height:70%;background:linear-gradient(to bottom,transparent,rgba(76,175,80,0.12),transparent);width:2px;animation:beamFall 16s linear infinite;animation-delay:-3s\"></div>\n<div class=\"particle\" style=\"width:4px;height:4px;background:rgba(95,182,224,0.6);bottom:5%;left:8%;animation:floatUp1 12s linear infinite,bobble 4s ease-in-out infinite;animation-delay:0s,0s\"></div>\n<div class=\"particle\" style=\"width:3px;height:3px;background:rgba(76,175,80,0.7);bottom:5%;left:20%;animation:floatUp2 16s linear infinite,bobble 6s ease-in-out infinite;animation-delay:-4s,-1s\"></div>\n<div class=\"particle\" style=\"width:5px;height:5px;background:rgba(18,160,173,0.45);bottom:5%;left:33%;animation:floatUp3 14s linear infinite,bobble 5s ease-in-out infinite;animation-delay:-8s,-2s\"></div>\n<div class=\"particle\" style=\"width:3px;height:3px;background:rgba(76,175,80,0.6);bottom:5%;left:45%;animation:floatUp1 18s linear infinite,bobble 7s ease-in-out infinite;animation-delay:-2s,-3s\"></div>\n<div class=\"particle\" style=\"width:4px;height:4px;background:rgba(95,182,224,0.55);bottom:5%;left:57%;animation:floatUp2 13s linear infinite,bobble 4.5s ease-in-out infinite;animation-delay:-6s,-1.5s\"></div>\n<div class=\"particle\" style=\"width:6px;height:6px;background:rgba(18,160,173,0.45);bottom:5%;left:68%;animation:floatUp3 20s linear infinite,bobble 6.5s ease-in-out infinite;animation-delay:-10s,-0.5s\"></div>\n<div class=\"particle\" style=\"width:3px;height:3px;background:rgba(159,208,238,0.8);bottom:5%;left:76%;animation:floatUp1 15s linear infinite,bobble 5.5s ease-in-out infinite;animation-delay:-3s,-2.5s\"></div>\n<div class=\"particle\" style=\"width:4px;height:4px;background:rgba(76,175,80,0.55);bottom:5%;left:84%;animation:floatUp2 17s linear infinite,bobble 4s ease-in-out infinite;animation-delay:-7s,-1s\"></div>\n<div class=\"particle\" style=\"width:5px;height:5px;background:rgba(18,160,173,0.5);bottom:5%;left:91%;animation:floatUp3 11s linear infinite,bobble 6s ease-in-out infinite;animation-delay:-1s,-3.5s\"></div>\n<div class=\"particle\" style=\"width:3px;height:3px;background:rgba(95,182,224,0.5);bottom:5%;left:4%;animation:floatUp1 19s linear infinite,bobble 5s ease-in-out infinite;animation-delay:-5s,-2s\"></div>";
+  document.body.insertBefore(bg, document.body.firstChild);
 })();
 
 // ---------- ROLE MODEL ----------
@@ -62,7 +73,7 @@ let wards = [];
 let myWards = [];
 let bankHolidays = [];
 let processingCutoffs = { weekday: '14:00', weekend_or_holiday: '14:00' };
-let systemSettings = { topup_window_start: '00:01', topup_window_end: '17:00', duplicate_window_hours: '48', overdue_topup_preview_enabled: 'false', trust_logo_data_url: '', order_history_days: '7' };
+let systemSettings = { topup_window_start: '00:01', topup_window_end: '17:00', duplicate_window_hours: '48', overdue_topup_preview_enabled: 'false', trust_logo_data_url: '', login_logo_data_url: '', order_history_days: '7' };
 let notifyPollTimer = null;
 let lastSeenOrdersAt = null;
 
@@ -525,7 +536,7 @@ function startNewOrderPolling() {
     // does NOT check document.hidden — the whole point is to reach
     // someone who isn't currently looking at the tab.
     if (!document.hidden) toast(msg);
-    pushNotify('SARA', msg);
+    pushNotify('Stock Req', msg);
   }, 45000);
 }
 

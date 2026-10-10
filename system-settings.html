@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SARA — System settings</title>
+<title>Stock Req — System settings</title>
 <link rel="stylesheet" href="shared.css" />
 </head>
 <body data-page="system-settings.html">
@@ -12,7 +12,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">SARA</div>
+        <div class="name">Stock Req</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -81,6 +81,14 @@
       <button class="btn ghost small" id="logo-choose-btn">Choose image\u2026</button>
       ${systemSettings.trust_logo_data_url ? `<button class="btn ghost small" id="logo-remove-btn">Remove logo</button>` : ''}
     </div>
+    ${isDeveloper() ? `<div class="card">
+      <h2>Login screen logo</h2>
+      <p class="muted">Shown above the Stock Req title on the sign-in page. Developer only. Upload a small image (PNG or JPG works best, under 1MB).</p>
+      ${systemSettings.login_logo_data_url ? `<img src="${systemSettings.login_logo_data_url}" alt="Current login logo" style="max-height:90px; max-width:260px; display:block; margin-bottom:10px; border:1px solid var(--border); border-radius:6px; padding:6px;" />` : `<p class="muted" style="font-size:11.5px;">No login logo set yet.</p>`}
+      <input type="file" id="login-logo-input" accept="image/png,image/jpeg" class="hidden" />
+      <button class="btn ghost small" id="login-logo-choose-btn">Choose image\u2026</button>
+      ${systemSettings.login_logo_data_url ? `<button class="btn ghost small" id="login-logo-remove-btn">Remove logo</button>` : ''}
+    </div>` : ''}
   `;
 
   document.getElementById('save-cutoffs').onclick = async () => {
@@ -161,6 +169,39 @@
       if (error) return toast(error.message, true);
       systemSettings.trust_logo_data_url = '';
       toast('Trust logo removed.');
+      renderSystemSettings();
+    };
+  }
+
+  const llChoose = document.getElementById('login-logo-choose-btn');
+  if (llChoose) {
+    llChoose.onclick = () => document.getElementById('login-logo-input').click();
+    document.getElementById('login-logo-input').onchange = async () => {
+      const file = document.getElementById('login-logo-input').files[0];
+      if (!file) return;
+      if (file.size > 1024 * 1024) return toast('Please choose an image under 1MB.', true);
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const { error } = await sb.from('system_settings').update({ value: dataUrl }).eq('key', 'login_logo_data_url');
+      if (error) return toast(error.message, true);
+      systemSettings.login_logo_data_url = dataUrl;
+      try { localStorage.setItem('login_logo_cache', dataUrl); } catch (e) {}
+      toast('Login logo updated.');
+      renderSystemSettings();
+    };
+  }
+  const llRemove = document.getElementById('login-logo-remove-btn');
+  if (llRemove) {
+    llRemove.onclick = async () => {
+      const { error } = await sb.from('system_settings').update({ value: '' }).eq('key', 'login_logo_data_url');
+      if (error) return toast(error.message, true);
+      systemSettings.login_logo_data_url = '';
+      try { localStorage.removeItem('login_logo_cache'); } catch (e) {}
+      toast('Login logo removed.');
       renderSystemSettings();
     };
   }
