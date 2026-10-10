@@ -163,10 +163,24 @@ async function exportStocklistPdf(ward_id) {
 
   if (systemSettings.trust_logo_data_url) {
     try {
-      const fmt = systemSettings.trust_logo_data_url.includes('image/png') ? 'PNG' : 'JPEG';
-      doc.addImage(systemSettings.trust_logo_data_url, fmt, margin, y, 100, 45, undefined, 'FAST');
+      // Rasterise to PNG first: jsPDF can't embed SVG directly, and this
+      // also keeps the logo's own aspect ratio (fitted into a 140x60pt box).
+      const logo = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = systemSettings.trust_logo_data_url;
+      });
+      const nw = logo.naturalWidth || 300, nh = logo.naturalHeight || 130;
+      const boxW = 140, boxH = 60;
+      const scale = Math.min(boxW / nw, boxH / nh);
+      const w = nw * scale, h = nh * scale;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(w * 4); canvas.height = Math.round(h * 4);
+      canvas.getContext('2d').drawImage(logo, 0, 0, canvas.width, canvas.height);
+      doc.addImage(canvas.toDataURL('image/png'), 'PNG', margin, y, w, h, undefined, 'FAST');
     } catch (e) { /* a corrupt or unsupported image shouldn't block the export */ }
-    y += 60;
+    y += 70;
   }
 
   doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
@@ -233,6 +247,42 @@ async function exportStocklistPdf(ward_id) {
   });
 
   doc.save(`${(ward?.name || 'ward').replace(/[^a-z0-9]+/gi, '-')}-stocklist.pdf`);
+}
+
+async function loadStockHistory() {
+  const el = document.getElementById('stock-history');
+  const wardSel = document.getElementById('stock-ward');
+  if (!el || !wardSel) return;
+  const ward_id = wardSel.value;
+  if (!ward_id) { el.innerHTML = '<div class="empty">Select a ward.</div>'; return; }
+  const { data, error } = await sb.from('blist_item_history')
+    .select('medicine_name, change_type, old_value, new_value, changed_by, changed_at')
+    .eq('ward_id', ward_id).order('changed_at', { ascending: false }).limit(5);
+  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  if (!data || !data.length) { el.innerHTML = '<div class="empty">No changes recorded yet.</div>'; return; }
+  const ids = [...new Set(data.map(r => r.changed_by).filter(Boolean))];
+  let names = {};
+  if (ids.length) {
+    const { data: ppl } = await sb.from('profiles').select('id, full_name').in('id', ids);
+    names = Object.fromEntries((ppl || []).map(x => [x.id, x.full_name]));
+  }
+  const describe = (r) => {
+    switch (r.change_type) {
+      case 'added': return `added (max ${esc(r.new_value ?? '—')})`;
+      case 'removed': return `removed (was max ${esc(r.old_value ?? '—')})`;
+      case 'max_qty_changed': return `max level ${esc(r.old_value ?? '—')} → ${esc(r.new_value ?? '—')}`;
+      case 'min_qty_changed': return `min level ${esc(r.old_value ?? '—')} → ${esc(r.new_value ?? '—')}`;
+      case 'reorder_flag_changed': return `restricted reorder ${r.new_value === 'true' ? 'switched on' : 'switched off'}`;
+      default: return esc(r.change_type);
+    }
+  };
+  el.innerHTML = `<table><thead><tr><th>When</th><th>Medicine</th><th>Change</th><th>By</th></tr></thead><tbody>
+    ${data.map(r => `<tr>
+      <td>${new Date(r.changed_at).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' })}</td>
+      <td>${esc(r.medicine_name)}</td>
+      <td>${describe(r)}</td>
+      <td>${esc(names[r.changed_by] || '—')}</td>
+    </tr>`).join('')}</tbody></table>`;
 }
 
 async function loadStockList() {
@@ -341,6 +391,14 @@ async function renderAdminStock() {
         <div style="align-self:flex-end;"><button class="btn magenta small" id="bulk-add-btn">Add to all wards</button></div>
       </div>
     </div>
+    <div class="card">
+      <h2>Remove a drug from every ward</h2>
+      <p class="muted">Takes the chosen drug off the stocklist of <b>every</b> ward that stocks it, including inactive wards. The drug stays in the drug catalog, and past orders are not affected. Each removal is logged in the ward's change history.</p>
+      <div class="row">
+        <div><label>Medicine</label><select id="bulk-remove-name"><option value="">Loading\u2026</option></select></div>
+        <div style="align-self:flex-end;"><button class="btn danger small" id="bulk-remove-btn">Remove from all wards</button></div>
+      </div>
+    </div>
     <div class="card"><h2>Recent changes to this ward's stocklist</h2><div id="stock-history">Loading\u2026</div></div>`;
 
   document.getElementById('stock-ward').onchange = () => {
@@ -389,14 +447,43 @@ async function renderAdminStock() {
     document.getElementById('bulk-add-minqty').value = '';
     document.getElementById('bulk-add-maxqty').value = '1';
     toast(`${name} added to ${toInsert.length} ward${toInsert.length > 1 ? 's' : ''} (${existingIds.size} already had it).`);
+    loadBulkRemoveOptions();
     loadStockList();
     loadStockHistory();
     loadBuilder(document.getElementById('stock-ward').value);
   };
 
+  async function loadBulkRemoveOptions() {
+    const sel = document.getElementById('bulk-remove-name');
+    if (!sel) return;
+    const { data, error } = await sb.from('blist_items').select('medicine_name');
+    if (error) { sel.innerHTML = '<option value="">Could not load</option>'; return; }
+    const counts = {};
+    (data || []).forEach(r => { counts[r.medicine_name] = (counts[r.medicine_name] || 0) + 1; });
+    const names = Object.keys(counts).sort((a, b) => a.localeCompare(b));
+    sel.innerHTML = '<option value="">Choose a medicine\u2026</option>' + names.map(n => `<option value="${esc(n)}">${esc(n)} (${counts[n]} ward${counts[n] > 1 ? 's' : ''})</option>`).join('');
+  }
+
+  document.getElementById('bulk-remove-btn').onclick = async () => {
+    const name = document.getElementById('bulk-remove-name').value;
+    if (!name) return toast('Choose a medicine.', true);
+    const { data: rows, error: selErr } = await sb.from('blist_items').select('id').eq('medicine_name', name);
+    if (selErr) return toast(selErr.message, true);
+    if (!rows || !rows.length) { toast('No ward stocks this drug.', true); return loadBulkRemoveOptions(); }
+    if (!confirm(`Remove ${name} from ${rows.length} ward stocklist${rows.length > 1 ? 's' : ''}?\n\nIt stays in the drug catalog, and you can add it back later.`)) return;
+    const { error: delErr } = await sb.from('blist_items').delete().eq('medicine_name', name);
+    if (delErr) return toast(delErr.message, true);
+    toast(`${name} removed from ${rows.length} ward${rows.length > 1 ? 's' : ''}.`);
+    loadStockList();
+    loadStockHistory();
+    loadBuilder(document.getElementById('stock-ward').value);
+    loadBulkRemoveOptions();
+  };
+
   await loadStockList();
   await loadStockHistory();
   await loadBuilder(document.getElementById('stock-ward').value);
+  await loadBulkRemoveOptions();
 }
 
 (async () => {

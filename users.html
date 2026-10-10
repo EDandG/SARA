@@ -55,6 +55,22 @@
 
   body.innerHTML = `
     <div class="card">
+      <h2>Invite by email</h2>
+      <p class="muted">Set up a group once: choose the title, tick the permissions and pick the wards, then paste their email addresses. Each person gets a personal link and only has to enter their name and choose a password &mdash; their access is already in place. Send a different group by changing the settings and sending again.</p>
+      <label>Email addresses <span class="muted" style="font-weight:400;">(one per line, or separated by commas)</span></label>
+      <textarea id="iv-emails" rows="4" spellcheck="false" style="width:100%; padding:9px 10px; border:1px solid var(--border); border-radius:6px; font:inherit; font-size:14px;" placeholder="name@example.nhs.uk"></textarea>
+      <div class="row" style="margin-top:10px;">
+        <div><label>Title <span class="muted" style="font-weight:400;">(a label only)</span></label><select id="iv-role">${roleOptions.map(r => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select></div>
+      </div>
+      <div style="margin-top:10px;"><label>Permissions</label><div class="row" id="iv-perms" style="flex-wrap:wrap; gap:4px 18px;"></div></div>
+      <div style="margin-top:10px;"><label>Wards <span class="muted" style="font-weight:400;">(ward access they will have from day one)</span></label><div id="iv-wards"></div></div>
+      <div style="margin-top:10px;"><label>Site access <span class="muted" style="font-weight:400;">(only needed for approving orders or managing users, stocklists or wards)</span></label>
+        <div class="checklist">${sites.map(s => `<label><input type="checkbox" class="iv-site-cb" value="${s.id}">${esc(s.name)}</label>`).join('') || '<span class="muted">No sites yet.</span>'}</div></div>
+      <button class="btn magenta" style="margin-top:14px;" id="iv-send">Send invitations</button>
+      <div id="iv-result" style="margin-top:14px;"></div>
+    </div>
+    <div class="card"><h2>Invitations</h2><div id="iv-list">Loading\u2026</div></div>
+    <div class="card">
       <h2>Create login</h2>
       <div class="row">
         <div><label>Full name</label><input type="text" id="nu-name" /></div>
@@ -134,6 +150,128 @@
     };
     document.querySelectorAll('.nu-site-scope-cb').forEach(cb => cb.onchange = updateWardGroups);
   }
+
+  // ---------- Invite by email ----------
+  const IV_PERMS = [
+    ['can_order', 'Order stock'], ['can_process', 'Process stock'], ['can_check_picking', 'Check picked requests'],
+    ['can_mark_nonurgent', 'Mark non-urgent'], ['can_freetext_temp_stock', 'Free-text temp stock item'],
+    ['can_approve_orders', 'Approve orders'], ['can_manage_users', 'Manage users'],
+    ['can_manage_ward_staff', 'Manage ward staff'], ['can_manage_stocklists', 'Manage stocklists'],
+    ['can_manage_wards_sites', 'Manage wards & sites'],
+    ...(isDeveloper() ? [['can_view_bi', 'Business Intelligence access']] : []),
+  ];
+  document.getElementById('iv-perms').innerHTML = IV_PERMS.map(([k, label]) =>
+    `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400; margin:3px 0;"><input type="checkbox" class="iv-perm" data-perm="${k}" style="width:auto;"> ${esc(label)}</label></div>`).join('');
+  document.getElementById('iv-wards').innerHTML = formSites.map(sv => {
+    const ws = wardsForForm.filter(w => w.site_id === sv.id);
+    return `<div style="margin-bottom:10px;">
+      <div style="font-weight:600; font-size:12.5px; color:var(--navy); margin-bottom:4px;">${esc(sv.name)}</div>
+      <div class="checklist" style="max-height:140px;">${ws.map(w => `<label><input type="checkbox" class="iv-ward-cb" value="${w.id}">${esc(w.name)}</label>`).join('') || '<span class="muted">No wards at this site.</span>'}</div>
+    </div>`;
+  }).join('') || '<span class="muted">No wards available to you yet.</span>';
+
+  async function callInviteFn(payload) {
+    const { data: { session: s } } = await sb.auth.getSession();
+    const res = await fetch(`${FN_BASE}/admin-invite-users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${s.access_token}` },
+      body: JSON.stringify({ ...payload, join_url: new URL('join.html', window.location.href).href }),
+    });
+    let out = {};
+    try { out = await res.json(); } catch (e) {}
+    if (!res.ok) throw new Error(out.error || 'Could not send invitations');
+    return out;
+  }
+
+  function renderInviteResult(out) {
+    const el = document.getElementById('iv-result');
+    const rows = out.results || [];
+    const needLinks = rows.filter(r => r.link);
+    const okMailed = rows.filter(r => r.emailed).length;
+    const bad = rows.filter(r => !r.ok && !r.link);
+    let html = '';
+    if (okMailed) html += `<div class="diffline add">✓ ${okMailed} invitation${okMailed > 1 ? 's' : ''} emailed.</div>`;
+    if (bad.length) html += bad.map(r => `<div class="diffline rem">${esc(r.email)}: ${esc(r.error || 'failed')}</div>`).join('');
+    if (needLinks.length) {
+      html += `<div class="muted" style="margin:8px 0;">${out.email_configured === false
+        ? 'Email sending isn’t set up yet, so the invitations have been created but not emailed. Copy each personal link below and send it to that person yourself.'
+        : 'These emails couldn’t be sent, but the invitations are valid. Copy each link and send it yourself.'}</div>
+        <table><thead><tr><th>Email</th><th>Personal link (works once, 7 days)</th><th></th></tr></thead><tbody>
+        ${needLinks.map((r, i) => `<tr><td>${esc(r.email)}</td><td><input type="text" readonly value="${esc(r.link)}" id="iv-link-${i}" style="font-size:12px;" /></td><td><button class="btn ghost small" data-copy="iv-link-${i}">Copy</button></td></tr>`).join('')}
+        </tbody></table>`;
+    }
+    el.innerHTML = html;
+    el.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+      const inp = document.getElementById(b.dataset.copy);
+      try { await navigator.clipboard.writeText(inp.value); } catch (e) { inp.select(); document.execCommand('copy'); }
+      b.textContent = 'Copied';
+    });
+  }
+
+  document.getElementById('iv-send').onclick = async () => {
+    const emails = document.getElementById('iv-emails').value.split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
+    if (!emails.length) return toast('Add at least one email address.', true);
+    const grants = {};
+    document.querySelectorAll('.iv-perm').forEach(cb => { if (cb.checked) grants[cb.dataset.perm] = true; });
+    const ward_ids = [...document.querySelectorAll('.iv-ward-cb:checked')].map(c => c.value);
+    const site_ids = [...document.querySelectorAll('.iv-site-cb:checked')].map(c => c.value);
+    const role = document.getElementById('iv-role').value;
+    if (!Object.keys(grants).length && !confirm('No permissions are ticked, so these accounts won’t be able to do anything yet. Send anyway?')) return;
+    const btn = document.getElementById('iv-send');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const out = await callInviteFn({ emails, role, grants, ward_ids, site_ids });
+      renderInviteResult(out);
+      document.getElementById('iv-emails').value = '';
+      loadInvitations();
+    } catch (e) { toast(e.message, true); }
+    btn.disabled = false; btn.textContent = 'Send invitations';
+  };
+
+  async function loadInvitations() {
+    const el = document.getElementById('iv-list');
+    const { data, error } = await sb.from('invitations')
+      .select('id, email, email_masked, role, ward_ids, status, created_at, expires_at, last_sent_at, email_error')
+      .order('created_at', { ascending: false }).limit(100);
+    if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+    if (!data || !data.length) { el.innerHTML = '<div class="empty">No invitations sent yet.</div>'; return; }
+    const fmt = d => d ? new Date(d).toLocaleDateString('en-GB') : '—';
+    const statusBadge = (r) => {
+      const expired = r.status === 'pending' && new Date(r.expires_at) < new Date();
+      if (r.status === 'accepted') return '<span class="badge active">Joined</span>';
+      if (r.status === 'revoked') return '<span class="badge suspended">Revoked</span>';
+      return expired ? '<span class="badge out_of_stock">Expired</span>' : '<span class="badge pending">Waiting</span>';
+    };
+    el.innerHTML = `<table><thead><tr><th>Email</th><th>Title</th><th>Wards</th><th>Status</th><th>Sent</th><th>Expires</th><th></th></tr></thead><tbody>
+      ${data.map(r => `<tr>
+        <td>${esc(r.email || r.email_masked)}${r.email_error ? `<div class="attribution" style="color:var(--red);">Email not sent</div>` : ''}</td>
+        <td>${esc(roleLabel(r.role))}</td>
+        <td>${(r.ward_ids || []).map(id => esc(wardName(id))).join(', ') || '—'}</td>
+        <td>${statusBadge(r)}</td>
+        <td>${fmt(r.last_sent_at || r.created_at)}</td>
+        <td>${r.status === 'pending' ? fmt(r.expires_at) : '—'}</td>
+        <td style="text-align:right; white-space:nowrap;">${r.status === 'pending' ? `
+          <button class="btn ghost small" data-iv-resend="${r.id}">New link</button>
+          <button class="btn danger small" data-iv-revoke="${r.id}">Revoke</button>` : ''}</td>
+      </tr>`).join('')}</tbody></table>`;
+    el.querySelectorAll('[data-iv-resend]').forEach(b => b.onclick = async () => {
+      try {
+        const out = await callInviteFn({ resend_ids: [b.dataset.ivResend] });
+        renderInviteResult(out);
+        window.scrollTo({ top: document.getElementById('iv-result').getBoundingClientRect().top + window.scrollY - 120, behavior: 'smooth' });
+        loadInvitations();
+      } catch (e) { toast(e.message, true); }
+    });
+    el.querySelectorAll('[data-iv-revoke]').forEach(b => b.onclick = async () => {
+      if (!confirm('Revoke this invitation? The link will stop working.')) return;
+      const { error: rErr } = await sb.rpc('revoke_invitation', { p_id: b.dataset.ivRevoke });
+      if (rErr) return toast(rErr.message, true);
+      toast('Invitation revoked.');
+      loadInvitations();
+    });
+  }
+  loadInvitations();
+
   document.getElementById('nu-role').onchange = renderRoleDependentFields;
   renderRoleDependentFields();
 

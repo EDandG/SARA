@@ -31,7 +31,15 @@
 
 <script src="vendor/supabase.js"></script>
 <script src="shared.js"></script>
-<script>async function renderSystemSettings() {
+<script>function fixSvgMime(dataUrl, file) {
+  // Some browsers report an empty type for .svg files; make sure it's tagged as SVG.
+  if (/\.svg$/i.test(file.name) && !dataUrl.startsWith('data:image/svg+xml')) {
+    return dataUrl.replace(/^data:[^;,]*/, 'data:image/svg+xml');
+  }
+  return dataUrl;
+}
+
+async function renderSystemSettings() {
   const body = document.getElementById('body');
   body.innerHTML = `
     <div class="card">
@@ -75,17 +83,17 @@
     </div>
     <div class="card">
       <h2>Trust logo</h2>
-      <p class="muted">Shown at the top of the printable PDF stocklist export. Upload a small image (PNG or JPG works best) \u2014 it's stored directly, no separate file hosting needed.</p>
+      <p class="muted">Shown at the top of the printable PDF stocklist export. Upload a small image (SVG, PNG or JPG) \u2014 it's stored directly, no separate file hosting needed.</p>
       ${systemSettings.trust_logo_data_url ? `<img src="${systemSettings.trust_logo_data_url}" alt="Current trust logo" style="max-height:70px; max-width:220px; display:block; margin-bottom:10px; border:1px solid var(--border); border-radius:6px; padding:6px;" />` : `<p class="muted" style="font-size:11.5px;">No logo set yet.</p>`}
-      <input type="file" id="logo-input" accept="image/png,image/jpeg" class="hidden" />
+      <input type="file" id="logo-input" accept="image/png,image/jpeg,image/svg+xml,.svg" class="hidden" />
       <button class="btn ghost small" id="logo-choose-btn">Choose image\u2026</button>
       ${systemSettings.trust_logo_data_url ? `<button class="btn ghost small" id="logo-remove-btn">Remove logo</button>` : ''}
     </div>
     ${isDeveloper() ? `<div class="card">
       <h2>Login screen logo</h2>
-      <p class="muted">Shown above the Stock Req title on the sign-in page. Developer only. Upload a small image (PNG or JPG works best, under 1MB).</p>
+      <p class="muted">Shown above the Stock Req title on the sign-in page. Developer only. Upload a small image (SVG, PNG or JPG, under 1MB).</p>
       ${systemSettings.login_logo_data_url ? `<img src="${systemSettings.login_logo_data_url}" alt="Current login logo" style="max-height:90px; max-width:260px; display:block; margin-bottom:10px; border:1px solid var(--border); border-radius:6px; padding:6px;" />` : `<p class="muted" style="font-size:11.5px;">No login logo set yet.</p>`}
-      <input type="file" id="login-logo-input" accept="image/png,image/jpeg" class="hidden" />
+      <input type="file" id="login-logo-input" accept="image/png,image/jpeg,image/svg+xml,.svg" class="hidden" />
       <button class="btn ghost small" id="login-logo-choose-btn">Choose image\u2026</button>
       ${systemSettings.login_logo_data_url ? `<button class="btn ghost small" id="login-logo-remove-btn">Remove logo</button>` : ''}
     </div>` : ''}
@@ -151,11 +159,11 @@
     if (file.size > 1024 * 1024) return toast('Please choose an image under 1MB.', true);
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
+      reader.onload = () => resolve(fixSvgMime(reader.result, file));
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
-    const { error } = await sb.from('system_settings').update({ value: dataUrl }).eq('key', 'trust_logo_data_url');
+    const { error } = await sb.from('system_settings').upsert({ key: 'trust_logo_data_url', value: dataUrl }, { onConflict: 'key' });
     if (error) return toast(error.message, true);
     systemSettings.trust_logo_data_url = dataUrl;
     toast('Trust logo updated.');
@@ -165,7 +173,7 @@
   const logoRemoveBtn = document.getElementById('logo-remove-btn');
   if (logoRemoveBtn) {
     logoRemoveBtn.onclick = async () => {
-      const { error } = await sb.from('system_settings').update({ value: '' }).eq('key', 'trust_logo_data_url');
+      const { error } = await sb.from('system_settings').upsert({ key: 'trust_logo_data_url', value: '' }, { onConflict: 'key' });
       if (error) return toast(error.message, true);
       systemSettings.trust_logo_data_url = '';
       toast('Trust logo removed.');
@@ -182,11 +190,11 @@
       if (file.size > 1024 * 1024) return toast('Please choose an image under 1MB.', true);
       const dataUrl = await new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
+        reader.onload = () => resolve(fixSvgMime(reader.result, file));
         reader.onerror = reject;
         reader.readAsDataURL(file);
       });
-      const { error } = await sb.from('system_settings').update({ value: dataUrl }).eq('key', 'login_logo_data_url');
+      const { error } = await sb.from('system_settings').upsert({ key: 'login_logo_data_url', value: dataUrl }, { onConflict: 'key' });
       if (error) return toast(error.message, true);
       systemSettings.login_logo_data_url = dataUrl;
       try { localStorage.setItem('login_logo_cache', dataUrl); } catch (e) {}
@@ -197,7 +205,7 @@
   const llRemove = document.getElementById('login-logo-remove-btn');
   if (llRemove) {
     llRemove.onclick = async () => {
-      const { error } = await sb.from('system_settings').update({ value: '' }).eq('key', 'login_logo_data_url');
+      const { error } = await sb.from('system_settings').upsert({ key: 'login_logo_data_url', value: '' }, { onConflict: 'key' });
       if (error) return toast(error.message, true);
       systemSettings.login_logo_data_url = '';
       try { localStorage.removeItem('login_logo_cache'); } catch (e) {}
