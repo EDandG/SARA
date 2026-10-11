@@ -70,6 +70,16 @@
           </a>`).join('')}
       </div>
     </div>`;
+
+  // Red badge on "Complete final check" showing requests waiting for someone else to check.
+  const checkTile = main.querySelector('a.home-tile[href$="#awaiting-check"]');
+  if (checkTile) {
+    try {
+      const { count } = await sb.from('order_sessions').select('id', { count: 'exact', head: true })
+        .not('picking_confirmed_at', 'is', null).is('checked_at', null).neq('picking_confirmed_by', profile.id);
+      if (count) checkTile.insertAdjacentHTML('beforeend', `<span class="tile-badge" title="${count} waiting for a check">${count}</span>`);
+    } catch (e) { /* badge is optional */ }
+  }
 })();
 </script>
 </body>

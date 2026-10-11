@@ -128,7 +128,7 @@ async function renderPending() {
   const topupSessions = (sessionsData || []).filter(s => s.order_type === 'topup');
 
   const awaitingCheckCard = canCheckPicking() && pickingCheckRequired() ? `
-    <div class="card">
+    <div class="card" id="awaiting-check">
       <h2>Awaiting check <span class="muted">(${(awaitingCheckData || []).length})</span></h2>
       ${awaitingCheckHtml(awaitingCheckData || [])}
     </div>` : '';
@@ -462,7 +462,8 @@ async function renderProcessingModalBody(sessionId) {
   const p = await requireAuth({ require: (pr) => !!pr.can_process });
   if (!p) return;
   document.getElementById('main').innerHTML = '<div id="body"></div>';
-  renderPending();
+  await renderPending();
+  if (location.hash === '#awaiting-check') document.getElementById('awaiting-check')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   startAutoRefresh(renderPending, null, 12000);
 })();
 </script>

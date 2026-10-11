@@ -673,14 +673,15 @@ function startNewOrderPolling() {
 function buildNavLinks() {
   const links = [];
   if (canOrder()) {
-    links.push({ href: 'order.html', label: 'Make a new stock request', group: 'Ordering' });
-    links.push({ href: 'order-history.html', label: 'Order history', group: 'Ordering' });
+    links.push({ href: 'order.html', label: 'Create new order', group: 'Create New Order' });
+    links.push({ href: 'order-history.html', label: 'Order history', group: 'Create New Order' });
   }
   if (canProcess()) {
-    if (profile?.role === 'bulk_assistant') links.push({ href: 'bulk-dashboard.html', label: 'Dashboard', group: 'Processing' });
-    links.push({ href: 'sessions.html', label: 'Pending orders', group: 'Processing' });
-    links.push({ href: 'out-of-stock.html', label: 'To follow orders', group: 'Processing' });
-    links.push({ href: 'processed-history.html', label: 'Processed (48h)', group: 'Processing' });
+    if (profile?.role === 'bulk_assistant') links.push({ href: 'bulk-dashboard.html', label: 'Dashboard', group: 'Process awaiting orders' });
+    links.push({ href: 'sessions.html', label: 'Pending orders', group: 'Process awaiting orders' });
+    links.push({ href: 'out-of-stock.html', label: 'To follow orders', group: 'Process awaiting orders' });
+    links.push({ href: 'processed-history.html', label: 'Processed (48h)', group: 'Process awaiting orders' });
+    if (canCheckPicking() && pickingCheckRequired()) links.push({ href: 'sessions.html#awaiting-check', label: 'Complete final check', group: 'Complete final check' });
   }
   if (canApproveOrders()) {
     links.push({ href: 'approvals.html', label: 'Above max stock waiting for approval', group: 'Above max stock waiting for approval' });
@@ -719,7 +720,16 @@ function buildNavLinks() {
 function buildAreaTiles() {
   const links = buildNavLinks();
   const groups = [...new Set(links.map(l => l.group))];
-  const iconFor = { Ordering:'🛒', Processing:'📦', 'Above max stock waiting for approval':'✅', Admin:'⚙️', Governance:'🔎', Insights:'📊' };
+  const svg = (d) => `<svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+  const iconFor = {
+    'Create New Order': svg('<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v3H9z"/><path d="M12 11v6M9 14h6"/>'),
+    'Complete final check': svg('<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v3H9z"/><path d="M8.5 14l2.5 2.5 4.5-5"/>'),
+    'Process awaiting orders': svg('<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>'),
+    'Above max stock waiting for approval': svg('<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>'),
+    Admin: svg('<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>'),
+    Governance: svg('<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/><path d="M8 10.5l2 2 3-3.5"/>'),
+    Insights: svg('<path d="M4 20V11M10 20V5M16 20v-6M2 20h20"/>'),
+  };
   return groups.map(g => ({ group: g, icon: iconFor[g] || '•', firstHref: links.find(l => l.group === g).href, label: g === 'Admin' ? (isSuperuser() ? 'System Admin' : 'User Management') : g }));
 }
 
