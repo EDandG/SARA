@@ -530,3 +530,12 @@ body[data-admin="1"] label:has(input[type=checkbox]){ text-transform:none; lette
 .rs-label.done{ color:var(--teal-deep); } .rs-label.oos{ color:var(--red); }
 .rs-label.alt, .rs-label.part{ color:var(--purple); } .rs-label.pend{ color:var(--amber); }
 tr.clickable{ cursor:pointer; }
+
+/* ---- Trust logo in the header (every page) ---- */
+header.topbar .brand .trust-logo{
+  background:#fff; border-radius:8px; padding:4px 10px; height:46px; display:flex; align-items:center;
+  box-shadow:0 1px 3px rgba(0,0,0,.25); flex-shrink:0;
+}
+header.topbar .brand .trust-logo img{ height:100%; width:auto; max-width:190px; object-fit:contain; display:block; }
+@media (max-width:600px){ header.topbar .brand .trust-logo{ height:38px; padding:3px 8px; } header.topbar .brand .trust-logo img{ max-width:130px; } }
+@media print{ header.topbar .brand .trust-logo{ box-shadow:none; } }

@@ -387,6 +387,23 @@ function renderSessionCard(session, allLines, nameById = {}) {
     </div>`;
 }
 
+// Puts the Trust logo (set by the Developer in System settings) at the left of
+// the header on every page. Shown on a white plate so any logo reads on navy.
+function applyTrustLogo() {
+  const url = String(systemSettings.trust_logo_data_url || '');
+  if (!/^data:image\/(svg\+xml|png|jpeg|gif|webp)[;,]/i.test(url)) return;
+  document.querySelectorAll('header.topbar .brand').forEach(brand => {
+    if (brand.querySelector('.trust-logo')) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'trust-logo';
+    const img = document.createElement('img');
+    img.alt = 'Trust logo';
+    img.src = url;
+    wrap.appendChild(img);
+    brand.insertBefore(wrap, brand.firstChild);
+  });
+}
+
 // ---------- REQUEST SUMMARY (click-through for any adhoc / top-up request) ----------
 // Shows every drug on a request: what was asked for, what was actually sent,
 // and what happened to it (sent in full, alternative, part supplied, out of
@@ -550,6 +567,7 @@ async function requireAuth(options = {}) {
   }
 
   document.querySelectorAll('[data-who-name]').forEach(el => el.textContent = `${profile.full_name} · ${roleLabel(profile.role)}`);
+  applyTrustLogo();
   document.querySelectorAll('[data-ward-context]').forEach(el => el.textContent = canOrder() && myWards.length
     ? myWards.map(w => w.name).join(', ')
     : (isSuperuser() ? 'Full system access' : isAdminRole() ? 'Admin' : isGovernance() ? 'Governance — read only' : ''));
