@@ -126,7 +126,7 @@ async function renderSessionDetail() {
           const dispositionAttr = o.disposition_reason ? `<div class="attribution">Reason: ${esc(o.disposition_reason)}</div>` : '';
           return `<tr id="line-${o.id}" ${o.approved_by ? 'style="background:var(--teal-pale);"' : ''}>
           <td>${o.status === 'pending' ? turnaroundDot(o) : ''}</td>
-          <td>${esc(o.medicine_name)} ${o.approved_by ? `<span class="badge complete">\u2713 Pharmacist-approved</span>` : ''}${approvedAttr}${processedAttr}${dispositionAttr}</td>
+          <td>${esc(o.medicine_name)}${packTag(o)} ${o.approved_by ? `<span class="badge complete">\u2713 Pharmacist-approved</span>` : ''}${approvedAttr}${processedAttr}${dispositionAttr}</td>
           <td>${o.quantity}</td>
           <td><span class="badge ${o.status}">${statusLabel(o.status)}</span></td>
           ${readOnly ? '' : `<td style="text-align:right; white-space:nowrap;">

@@ -41,7 +41,7 @@ async function renderOutOfStock() {
     <p class="muted">Click an item once it's ready to mark it supplied and record the date/time. Includes items marked out of stock, part-order remainders, and items marked non-urgent.</p>
     ${!data?.length ? `<div class="empty">Nothing currently sitting here.</div>` : `
     <table><thead><tr><th>Ward</th><th>Medicine</th><th>Qty</th><th></th></tr></thead><tbody>
-      ${data.map(o => `<tr><td>${esc(wardName(o.ward_id))}</td><td>${esc(o.medicine_name)}
+      ${data.map(o => `<tr><td>${esc(wardName(o.ward_id))}</td><td>${esc(o.medicine_name)}${packTag(o)}
         ${o.parent_order_id ? '<span class="badge part_supplied">To follow</span>' : ''}
         ${o.status === 'non_urgent' ? '<span class="badge non_urgent">Non-urgent</span>' : ''}
         ${attribution('Marked by', nameById[o.processed_by], o.processed_at)}</td><td>${o.quantity}</td>

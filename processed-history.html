@@ -84,7 +84,7 @@ async function renderProcessedHistory() {
     resultsEl.innerHTML = `<table><thead><tr><th>Ward</th><th>Medicine</th><th>Qty</th><th>Status</th><th>Actioned</th><th>By</th></tr></thead><tbody>
       ${filtered.map(r => `<tr>
         <td>${esc(wardName(r.ward_id))}</td>
-        <td>${esc(r.medicine_name)}${fulfilledNote(r)}</td>
+        <td>${esc(r.medicine_name)}${packTag(r)}${fulfilledNote(r)}</td>
         <td>${r.quantity}${r.status === "part_supplied" && r.supplied_qty != null ? ` <span class="muted">(${r.supplied_qty} supplied)</span>` : ""}</td>
         <td><span class="badge ${r.status}">${statusLabel(r.status)}</span></td>
         <td class="muted">${fmtDate(r._actionedAt)}</td>

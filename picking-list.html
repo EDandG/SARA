@@ -83,7 +83,7 @@ async function renderPickingList() {
         <thead><tr><th>Medicine</th><th>Qty</th><th>To follow</th><th>Part order</th><th>Out of stock</th></tr></thead>
         <tbody>
           ${(lines || []).map(o => `<tr>
-            <td>${esc(o.medicine_name)}</td>
+            <td>${esc(o.medicine_name)}${packTag(o)}</td>
             <td>${o.quantity}</td>
             <td class="mark-cell"><span class="mark-box"></span></td>
             <td class="mark-cell"><span class="mark-box"></span></td>

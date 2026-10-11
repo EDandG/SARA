@@ -77,6 +77,11 @@ async function renderSystemSettings() {
       <button class="btn magenta" style="margin-top:14px;" id="save-history-window">Save order history window</button>
     </div>
     <div class="card">
+      <h2>Second-person picking check</h2>
+      <p class="muted">When on, a picked request must be checked by a different person (someone with the check permission) before it counts as complete. When off, a request is complete as soon as the picker confirms it, and the record shows the check was not required. Developer and Superuser can both set this.</p>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="check-toggle" style="width:auto;" ${pickingCheckRequired() ? 'checked' : ''} />Require a second-person check</label>
+    </div>
+    <div class="card">
       <h2>Overdue top-up preview &amp; prefill</h2>
       <p class="muted">When a ward's top-up is due and wasn't submitted on time, this lets processing staff preview what a full top-up would look like (every stocklist item at max quantity), and lets whoever has ordering access to that ward pull that same list into a real order to submit. Nothing is auto-created — this only controls whether the option appears. Developer and Superuser can both set this.</p>
       <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="overdue-toggle" style="width:auto;" ${systemSettings.overdue_topup_preview_enabled === 'true' ? 'checked' : ''} />Enabled</label>
@@ -135,6 +140,17 @@ async function renderSystemSettings() {
     if (error) { toast(error.message, true); e.target.checked = !enabled; return; }
     systemSettings.overdue_topup_preview_enabled = String(enabled);
     toast(enabled ? 'Overdue top-up preview enabled.' : 'Overdue top-up preview disabled.');
+  };
+
+  document.getElementById('check-toggle').onchange = async (e) => {
+    const required = e.target.checked;
+    if (!required && !confirm('Turn the second-person check off?\n\nRequests picked from now on will complete as soon as they are confirmed. Any request currently waiting for a check will also be marked complete (check not required).')) {
+      e.target.checked = true; return;
+    }
+    const { data: waived, error } = await sb.rpc('set_picking_check_required', { p_required: required });
+    if (error) { toast(error.message, true); e.target.checked = !required; return; }
+    systemSettings.picking_check_required = String(required);
+    toast(required ? 'Second-person check switched on.' : `Second-person check switched off${waived ? ` (${waived} waiting request${waived > 1 ? 's' : ''} completed)` : ''}.`);
   };
 
   const topupBtn = document.getElementById('save-topup-window');

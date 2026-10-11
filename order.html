@@ -130,7 +130,7 @@ async function openTempStockModal() {
     const name = document.getElementById('ts-name').value;
     const qty = Math.max(1, parseInt(document.getElementById('ts-qty').value, 10) || 1);
     if (!name) { document.getElementById('ts-error').textContent = 'Choose an item.'; return; }
-    cart.push({ medicine_name: `[Temp stock] ${name}`, quantity: qty, max_qty: qty, isTemp: true });
+    cart.push({ medicine_name: `[Temp stock] ${name}`, quantity: qty, max_qty: qty, isTemp: true, pack_size: (catalog.find(c => c.medicine_name === name) || {}).pack_size || null });
     closeModal();
     renderWardOrder();
   };
@@ -309,7 +309,7 @@ async function renderOrderBuilder() {
       if (cart.find(c => c.medicine_name === name)) return;
       const item = items.find(i => i.medicine_name === name);
       if (!item) return;
-      cart.push({ medicine_name: item.medicine_name, quantity: 1, max_qty: item.max_qty });
+      cart.push({ medicine_name: item.medicine_name, quantity: 1, max_qty: item.max_qty, pack_size: packSizes[item.medicine_name] || null });
       added++;
     });
     renderCart();
@@ -332,7 +332,7 @@ async function renderOrderBuilder() {
     let added = 0;
     (items || []).forEach(item => {
       if (cart.find(c => c.medicine_name === item.medicine_name)) return;
-      cart.push({ medicine_name: item.medicine_name, quantity: item.max_qty, max_qty: item.max_qty });
+      cart.push({ medicine_name: item.medicine_name, quantity: item.max_qty, max_qty: item.max_qty, pack_size: packSizes[item.medicine_name] || null });
       added++;
     });
     renderCart();
@@ -350,7 +350,7 @@ async function renderOrderBuilder() {
     if (!q) { resultsEl.classList.add('hidden'); return; }
     const matches = items.filter(i => i.medicine_name.toLowerCase().includes(q)).slice(0, 12);
     resultsEl.innerHTML = matches.length
-      ? matches.map(i => `<div data-id="${i.id}">${esc(i.medicine_name)} <span class="muted">(max ${i.max_qty})</span></div>`).join('')
+      ? matches.map(i => `<div data-id="${i.id}">${esc(i.medicine_name)}${packTag({ medicine_name: i.medicine_name })} <span class="muted">(max ${i.max_qty})</span></div>`).join('')
       : `<div class="none">No matches</div>`;
     resultsEl.classList.remove('hidden');
     resultsEl.querySelectorAll('[data-id]').forEach(d => d.onclick = () => addToCart(items.find(i => i.id === d.dataset.id)));
@@ -380,7 +380,7 @@ async function renderOrderBuilder() {
           renderCart(); return;
         }
         existing.quantity++;
-      } else cart.push({ medicine_name: item.medicine_name, quantity: 1, max_qty: item.max_qty });
+      } else cart.push({ medicine_name: item.medicine_name, quantity: 1, max_qty: item.max_qty, pack_size: packSizes[item.medicine_name] || null });
       renderCart();
     };
 
@@ -444,7 +444,7 @@ async function renderOrderBuilder() {
       return `
       <div style="width:100%; margin-top:8px;">
         <div class="selected-pill" style="display:flex; width:100%;">
-          <b style="flex:1;">${esc(c.medicine_name)}</b>
+          <b style="flex:1;">${esc(c.medicine_name)}${packTag({ medicine_name: c.medicine_name, pack_size: c.pack_size })}</b>
           <div class="qty-stepper" style="margin-top:0;">
             <button data-dec="${i}">−</button>
             <input type="number" min="1" ${capsAtMax ? `max="${c.max_qty}"` : ''} id="cart-qty-${i}" value="${c.quantity}" style="width:48px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:2px 0; font-weight:700;" />
@@ -506,7 +506,7 @@ async function renderOrderBuilder() {
 
     const { error: linesErr } = await sb.from('orders').insert(cart.map(c => ({
       ward_id: orderWardId, ordered_by: profile.id, session_id: session.id,
-      medicine_name: c.medicine_name, quantity: c.quantity, order_type: orderType,
+      medicine_name: c.medicine_name, pack_size: c.pack_size || null, quantity: c.quantity, order_type: orderType,
       status: (orderType === 'adhoc' && !c.isTemp && c.quantity > c.max_qty) ? 'pending_approval' : 'pending',
     })));
     if (linesErr) {

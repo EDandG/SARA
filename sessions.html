@@ -43,7 +43,7 @@ async function renderPending() {
     openSessionIds.length
       ? sb.from('order_sessions').select('*').in('id', openSessionIds).order('created_at')
       : Promise.resolve({ data: [] }),
-    canCheckPicking()
+    canCheckPicking() && pickingCheckRequired()
       ? sb.from('order_sessions').select('*').not('picking_confirmed_at', 'is', null).is('checked_at', null).order('picking_confirmed_at')
       : Promise.resolve({ data: [] }),
   ]);
@@ -83,7 +83,7 @@ async function renderPending() {
         const pendingCount = lines.filter(o => o.status === 'pending').length;
         const oldestPending = lines.filter(o => o.status === 'pending').sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0];
         return `<tr class="${justArrived.has(s.id) ? 'row-flash' : ''}">
-          <td>${esc(wardName(s.ward_id))}</td>
+          <td><span class="ward-cell">${esc(wardName(s.ward_id))}</span><span class="type-pill ${s.order_type === 'topup' ? 'topup' : 'adhoc'}">${s.order_type === 'topup' ? 'Top-up' : 'Adhoc'}</span></td>
           <td>${esc(nameById[s.submitted_by] || '\u2014')}</td>
           <td class="muted">${fmtDate(s.created_at)}</td>
           <td>${lines.length}</td>
@@ -112,10 +112,19 @@ async function renderPending() {
     </tbody></table>`;
   }
 
+  const allPendingCount = (sessionsData || []).reduce((n, s) => n + (allLines || []).filter(o => o.session_id === s.id && o.status === 'pending').length, 0);
+  const mineCount = (sessionsData || []).filter(s => s.picking_claimed_by === profile.id).length;
+  const summaryHtml = `<div class="queue-summary">
+      <div class="qs-tile"><b>${(sessionsData || []).length}</b><span>Open requests</span></div>
+      <div class="qs-tile amber"><b>${allPendingCount}</b><span>Items pending</span></div>
+      <div class="qs-tile navy"><b>${mineCount}</b><span>Held by you</span></div>
+      ${canCheckPicking() && pickingCheckRequired() ? `<div class="qs-tile navy"><b>${(awaitingCheckData || []).length}</b><span>Awaiting check</span></div>` : ''}
+    </div>`;
+
   const adhocSessions = (sessionsData || []).filter(s => s.order_type !== 'topup');
   const topupSessions = (sessionsData || []).filter(s => s.order_type === 'topup');
 
-  const awaitingCheckCard = canCheckPicking() ? `
+  const awaitingCheckCard = canCheckPicking() && pickingCheckRequired() ? `
     <div class="card">
       <h2>Awaiting check <span class="muted">(${(awaitingCheckData || []).length})</span></h2>
       ${awaitingCheckHtml(awaitingCheckData || [])}
@@ -125,7 +134,7 @@ async function renderPending() {
   // processing roles get the same data as one combined list, since the
   // adhoc/topup split matters most for whoever's triaging bulk volume.
   if (profile.role === 'bulk_assistant') {
-    body.innerHTML = `
+    body.innerHTML = `${summaryHtml}
       <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap;">
         <div class="card" style="flex:1; min-width:320px;">
           <h2>Adhoc queue <span class="muted">(${adhocSessions.length})</span></h2>
@@ -138,7 +147,7 @@ async function renderPending() {
       </div>
       ${awaitingCheckCard}`;
   } else {
-    body.innerHTML = `<div class="card"><h2>Pending orders</h2>${queueTableHtml(sessionsData || [])}</div>${awaitingCheckCard}`;
+    body.innerHTML = `${summaryHtml}<div class="card"><h2>Pending orders</h2>${queueTableHtml(sessionsData || [])}</div>${awaitingCheckCard}`;
   }
 
   body.querySelectorAll('[data-start], [data-continue], [data-view]').forEach(b => b.onclick = () => {
@@ -224,33 +233,54 @@ async function renderProcessingModalBody(sessionId) {
   const nonChildOrders = (allLines || []).filter(o => !o.parent_order_id);
   const allActioned = nonChildOrders.length > 0 && nonChildOrders.every(o => o.status !== 'pending');
 
-  const header = `<h3>${esc(wardName(s.ward_id))} \u2014 ${s.order_type === 'topup' ? 'Top-up' : 'Adhoc'} request</h3>`;
+  const isTopup = s.order_type === 'topup';
+  const doneCount = nonChildOrders.filter(o => o.status !== 'pending').length;
+  const totalCount = nonChildOrders.length;
+  const pct = totalCount ? Math.round(doneCount / totalCount * 100) : 0;
+  const head = (sub) => `<div class="proc-head">
+      <div><h3>${esc(wardName(s.ward_id))}</h3><p class="ph-sub">${sub}</p></div>
+      <span class="ph-tag ${isTopup ? 'topup' : ''}">${isTopup ? 'Top-up request' : 'Adhoc request'}</span>
+    </div>`;
+  const progress = () => `<div class="proc-progress">
+      <div class="pp-top"><span>${doneCount} of ${totalCount} items actioned</span><span>${pct}%</span></div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+    </div>`;
+  const lineCls = (o) => o.status === 'pending' ? '' : (o.status === 'complete' || o.status === 'part_supplied' ? 'done' : (o.status === 'out_of_stock' ? 'oos' : 'other'));
+  const lineCard = (o, actionsHtml = '') => `<div class="proc-line ${lineCls(o)}" id="proc-line-${o.id}">
+      <div class="pl-main">
+        <div class="pl-name">${esc(o.medicine_name)}${packTag(o)}</div>
+        <div class="pl-meta"><span class="badge ${o._displayStatusClass || o.status}">${o._displayStatusText || statusLabel(o.status)}</span> ${fulfilledNote(o)}</div>
+      </div>
+      <div class="pl-qty"><b>${o.quantity}</b><span>Qty</span></div>
+      <div class="pl-actions">${actionsHtml}</div>
+    </div>`;
+  const closeBtn = `<button class="btn ghost" onclick="closeModal()">Close</button>`;
+  const submittedLine = `Submitted by ${esc(nameById[s.submitted_by] || '\u2014')} \u00b7 ${fmtDate(s.created_at)}`;
 
   if (procModalHeartbeat) { clearInterval(procModalHeartbeat); procModalHeartbeat = null; }
 
   // Already checked \u2014 fully done, read-only.
   if (s.checked_at) {
-    mount.innerHTML = `${header}
-      <p class="muted">Picked by ${esc(nameById[s.picking_confirmed_by] || '\u2014')}, checked by ${esc(nameById[s.checked_by] || '\u2014')} on ${fmtDate(s.checked_at)}.</p>
-      <table><thead><tr><th>Medicine</th><th>Qty</th><th>Status</th></tr></thead><tbody>
-        ${lines.map(o => `<tr><td>${esc(o.medicine_name)}${fulfilledNote(o)}</td><td>${o.quantity}</td><td><span class="badge ${o._displayStatusClass || o.status}">${o._displayStatusText || statusLabel(o.status)}</span></td></tr>`).join('')}
-      </tbody></table>
-      <div class="actions"><button class="btn ghost" onclick="closeModal()">Close</button></div>`;
+    mount.innerHTML = `${head(submittedLine)}
+      <div class="proc-body">
+        <p class="proc-note">Picked by ${esc(nameById[s.picking_confirmed_by] || '\u2014')}${s.check_waived ? ' \u2014 second-person check not required at the time.' : `, checked by ${esc(nameById[s.checked_by] || '\u2014')} on ${fmtDate(s.checked_at)}.`}</p>
+        ${lines.map(o => lineCard(o)).join('')}
+      </div>
+      <div class="proc-foot"><span class="hint"></span><div class="btns">${closeBtn}</div></div>`;
     return;
   }
 
   // Picked, awaiting an independent check.
   if (s.picking_confirmed_at) {
     const isOwnPick = s.picking_confirmed_by === profile.id;
-    mount.innerHTML = `${header}
-      <p class="muted">Picked by ${esc(nameById[s.picking_confirmed_by] || '\u2014')} on ${fmtDate(s.picking_confirmed_at)}. Awaiting an independent check.</p>
-      <table><thead><tr><th>Medicine</th><th>Qty</th><th>Status</th></tr></thead><tbody>
-        ${lines.map(o => `<tr><td>${esc(o.medicine_name)}${fulfilledNote(o)}</td><td>${o.quantity}</td><td><span class="badge ${o._displayStatusClass || o.status}">${o._displayStatusText || statusLabel(o.status)}</span></td></tr>`).join('')}
-      </tbody></table>
-      <div class="actions">
-        <button class="btn ghost" onclick="closeModal()">Close</button>
-        ${canCheckPicking() && !isOwnPick ? `<button class="btn magenta" id="proc-check-btn">Mark as checked</button>` : ''}
-        ${isOwnPick ? `<span class="muted" style="font-size:11.5px; align-self:center;">You picked this \u2014 someone else must check it</span>` : ''}
+    mount.innerHTML = `${head(submittedLine)}
+      <div class="proc-body">
+        <p class="proc-note">Picked by ${esc(nameById[s.picking_confirmed_by] || '\u2014')} on ${fmtDate(s.picking_confirmed_at)}. Awaiting an independent check.</p>
+        ${lines.map(o => lineCard(o)).join('')}
+      </div>
+      <div class="proc-foot">
+        <span class="hint">${isOwnPick ? 'You picked this \u2014 someone else must check it.' : ''}</span>
+        <div class="btns">${closeBtn}${canCheckPicking() && !isOwnPick ? `<button class="btn magenta confirm" id="proc-check-btn">Mark as checked</button>` : ''}</div>
       </div>`;
     const checkBtn = document.getElementById('proc-check-btn');
     if (checkBtn) checkBtn.onclick = async () => {
@@ -265,19 +295,23 @@ async function renderProcessingModalBody(sessionId) {
 
   // Locked by someone else.
   if (lockedByOther) {
-    mount.innerHTML = `${header}
-      <p><span class="badge pending_approval">In progress</span> ${esc(nameById[s.picking_claimed_by] || 'Someone')} is currently processing this request.</p>
-      <div class="actions"><button class="btn ghost" onclick="closeModal()">Close</button></div>`;
+    mount.innerHTML = `${head(submittedLine)}
+      <div class="proc-body">
+        <p><span class="badge pending_approval">In progress</span> ${esc(nameById[s.picking_claimed_by] || 'Someone')} is currently processing this request.</p>
+        ${nonChildOrders.map(o => lineCard(o)).join('')}
+      </div>
+      <div class="proc-foot"><span class="hint"></span><div class="btns">${closeBtn}</div></div>`;
     return;
   }
 
   // Unclaimed \u2014 offer to start.
   if (!s.picking_claimed_by || claimStale) {
-    mount.innerHTML = `${header}
-      <table><thead><tr><th>Medicine</th><th>Qty</th></tr></thead><tbody>
-        ${nonChildOrders.map(o => `<tr><td>${esc(o.medicine_name)}</td><td>${o.quantity}</td></tr>`).join('')}
-      </tbody></table>
-      <div class="actions"><button class="btn ghost" onclick="closeModal()">Close</button><button class="btn magenta" id="proc-start-btn">Start process</button></div>`;
+    mount.innerHTML = `${head(submittedLine)}
+      <div class="proc-body">
+        <p class="proc-note">${totalCount} item${totalCount === 1 ? '' : 's'} on this request. Press Start process to claim it \u2014 nobody else can pick it while you hold it.</p>
+        ${nonChildOrders.map(o => lineCard(o)).join('')}
+      </div>
+      <div class="proc-foot"><span class="hint"></span><div class="btns">${closeBtn}<button class="btn magenta confirm" id="proc-start-btn">Start process</button></div></div>`;
     document.getElementById('proc-start-btn').onclick = async () => {
       const { data: acquired, error: claimErr } = await sb.rpc('acquire_processing_claim', { target_session: sessionId });
       if (claimErr) return toast(claimErr.message, true);
@@ -290,31 +324,31 @@ async function renderProcessingModalBody(sessionId) {
   // isMine: full picking UI.
   procModalHeartbeat = setInterval(() => { sb.rpc('heartbeat_processing_claim', { target_session: sessionId }); }, 5 * 60000);
 
-  mount.innerHTML = `${header}
-    <p style="color:var(--teal-deep); font-weight:600;">Process started by ${esc(profile.full_name)}</p>
-    <div style="margin-bottom:10px;"><button class="btn ghost small" id="proc-print-btn">Print picking list</button></div>
-    <table><thead><tr><th>Medicine</th><th>Qty</th><th>Status</th><th></th></tr></thead><tbody>
-      ${lines.map(o => `<tr id="proc-line-${o.id}">
-        <td>${esc(o.medicine_name)}${fulfilledNote(o)}</td>
-        <td>${o.quantity}</td>
-        <td><span class="badge ${o._displayStatusClass || o.status}">${o._displayStatusText || statusLabel(o.status)}</span></td>
-        <td style="text-align:right; white-space:nowrap;">
-          ${o.status === 'pending' ? `
-            <button class="btn small ghost" data-complete="${o.id}">Complete</button>
-            ${o.quantity > 1 ? `<button class="btn small ghost" data-part="${o.id}">Part order</button>` : ''}
-            ${dupEligible.has(o.id) ? `<button class="btn small ghost" data-dup="${o.id}">Mark duplicate</button>` : ''}
-            ${canMarkNonUrgent() ? `<button class="btn small ghost" data-nonurgent="${o.id}">Non-urgent</button>` : ''}
-            <button class="btn small danger" data-oos="${o.id}">Out of stock</button>
-            ${substitutesByOrderId[o.id] ? `<button class="btn small ghost" data-substitute="${o.id}">Send alternative</button>` : ''}
-          ` : ''}
-        </td>
-      </tr>`).join('')}
-    </tbody></table>
-    <div class="actions">
-      <button class="btn ghost" id="proc-stepaway-btn">Step away</button>
-      <button class="btn magenta" id="proc-confirm-btn" ${allActioned ? '' : 'disabled'}>Confirm</button>
+  const actionsFor = (o) => o.status !== 'pending' ? '' : `
+      ${substitutesByOrderId[o.id] ? `<button class="btn small ghost" data-substitute="${o.id}">Send alternative</button>` : ''}
+      ${o.quantity > 1 ? `<button class="btn small ghost" data-part="${o.id}">Part order</button>` : ''}
+      ${dupEligible.has(o.id) ? `<button class="btn small ghost" data-dup="${o.id}">Mark duplicate</button>` : ''}
+      ${canMarkNonUrgent() ? `<button class="btn small ghost" data-nonurgent="${o.id}">Non-urgent</button>` : ''}
+      <button class="btn small warn" data-oos="${o.id}">Out of stock</button>
+      <button class="btn small go" data-complete="${o.id}">\u2713 Complete</button>`;
+
+  mount.innerHTML = `${head(submittedLine)}
+    ${progress()}
+    <div class="proc-body">
+      <div class="proc-toolbar">
+        <span class="me">Process started by ${esc(profile.full_name)}</span>
+        <span class="spacer"></span>
+        <button class="btn ghost small" id="proc-print-btn">Print picking list</button>
+      </div>
+      ${lines.map(o => lineCard(o, actionsFor(o))).join('')}
     </div>
-    ${!allActioned ? `<p class="muted" style="font-size:11.5px; margin-top:6px;">Every item needs a disposition before this can be confirmed.</p>` : ''}`;
+    <div class="proc-foot">
+      <span class="hint">${allActioned ? 'All items actioned \u2014 ready to confirm.' : 'Every item needs a disposition before this can be confirmed.'}</span>
+      <div class="btns">
+        <button class="btn ghost" id="proc-stepaway-btn">Step away</button>
+        <button class="btn magenta confirm" id="proc-confirm-btn" ${allActioned ? '' : 'disabled'}>Confirm</button>
+      </div>
+    </div>`;
 
   document.getElementById('proc-print-btn').onclick = () => {
     window.open(`picking-list.html?session=${sessionId}`, '_blank');
@@ -345,20 +379,27 @@ async function renderProcessingModalBody(sessionId) {
     if (e) return toast(e.message, true);
     renderProcessingModalBody(sessionId);
   });
-  mount.querySelectorAll('[data-substitute]').forEach(b => b.onclick = () => {
+  mount.querySelectorAll('[data-substitute]').forEach(b => b.onclick = async () => {
     const order = (allLines || []).find(o => o.id === b.dataset.substitute);
     const alternatives = substitutesByOrderId[order.id] || [];
+    // Cap: at most twice the ward's max stock level for the requested drug.
+    const { data: stockRow } = await sb.from('blist_items').select('max_qty')
+      .eq('ward_id', order.ward_id).eq('medicine_name', order.medicine_name).maybeSingle();
+    const wardMax = stockRow?.max_qty ?? null;
+    const subCap = wardMax ? wardMax * 2 : null;
     openModal(`<h3>Send an alternative</h3>
-      <p class="muted">Requested: ${esc(order.medicine_name)} \u00d7 ${order.quantity}</p>
+      <p class="muted">Requested: ${esc(order.medicine_name)}${packTag(order)} \u00d7 ${order.quantity}</p>
       <label>Send instead</label>
       <select id="sub-choice">${alternatives.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
       <label style="margin-top:8px;">Quantity sent</label>
-      <input type="number" min="1" id="sub-qty" value="${order.quantity}" />
+      <input type="number" min="1" ${subCap ? `max="${subCap}"` : ''} id="sub-qty" value="${subCap ? Math.min(order.quantity, subCap) : order.quantity}" />
+      ${subCap ? `<p class="muted" style="margin:4px 0 0; font-size:11.5px;">You can send up to ${subCap} (twice this ward's max of ${wardMax}).</p>` : ''}
       <div class="modal-error" id="sub-error"></div>
       <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="sub-confirm">Send this instead</button></div>`);
     document.getElementById('sub-confirm').onclick = async () => {
       const qty = Math.max(1, parseInt(document.getElementById('sub-qty').value, 10) || 1);
       const substituteId = document.getElementById('sub-choice').value;
+      if (subCap && qty > subCap) { document.getElementById('sub-error').textContent = `You can send at most ${subCap} (twice this ward\u2019s max of ${wardMax}).`; return; }
       const { error: e } = await sb.rpc('substitute_and_complete_order', {
         target_order: order.id, substitute_catalog_id: substituteId, sent_quantity: qty,
       });

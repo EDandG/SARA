@@ -73,7 +73,8 @@ let wards = [];
 let myWards = [];
 let bankHolidays = [];
 let processingCutoffs = { weekday: '14:00', weekend_or_holiday: '14:00' };
-let systemSettings = { topup_window_start: '00:01', topup_window_end: '17:00', duplicate_window_hours: '48', overdue_topup_preview_enabled: 'false', trust_logo_data_url: '', login_logo_data_url: '', order_history_days: '7' };
+let packSizes = {}; // medicine name -> pack size, from the drug catalog (loaded by requireAuth)
+let systemSettings = { topup_window_start: '00:01', topup_window_end: '17:00', duplicate_window_hours: '48', overdue_topup_preview_enabled: 'false', trust_logo_data_url: '', login_logo_data_url: '', order_history_days: '7', picking_check_required: 'true' };
 let notifyPollTimer = null;
 let lastSeenOrdersAt = null;
 
@@ -95,6 +96,8 @@ const isGovernance = () => profile?.role === 'governance';
 const canOrder      = () => !!profile?.can_order;
 const canProcess    = () => !!profile?.can_process;
 const canCheckPicking = () => isSuperuser() || !!profile?.can_check_picking;
+// Superuser/Developer can switch the second-person picking check off (System Settings).
+const pickingCheckRequired = () => systemSettings.picking_check_required !== 'false';
 const canApproveOrders = () => isSuperuser() || !!profile?.can_approve_orders;
 const canMarkNonUrgent = () => isSuperuser() || !!profile?.can_mark_nonurgent;
 const canManageStocklists = () => isSuperuser() || !!profile?.can_manage_stocklists;
@@ -167,6 +170,13 @@ function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 function wardName(id) { return wards.find(w => w.id === id)?.name || ''; }
 function siteName(id) { return sites.find(s => s.id === id)?.name || ''; }
 function statusLabel(s) { return { pending:'Pending', complete:'Complete', out_of_stock:'Out of stock', part_supplied:'Part supplied', duplicate:'Duplicate order', non_urgent:'Non-urgent', pending_approval:'Awaiting approval', superseded:'Superseded by reorder', rejected:'Rejected' }[s] || s; }
+// Pack size shown beside a medicine name. Prefers the size copied onto the
+// order line when it was placed; falls back to the catalog's current one.
+function packTag(o) {
+  const name = String(o?.medicine_name || '').replace(/^\[Temp stock\] /, '');
+  const ps = o?.pack_size || packSizes[name] || '';
+  return ps ? ` <span class="pack-size" style="font-size:11.5px; color:var(--text-dim); font-weight:400; white-space:nowrap;">\u00b7 Pack: ${esc(ps)}</span>` : '';
+}
 function fulfilledNote(o) {
   if (!o.fulfilled_as_medicine_name) return '';
   return `<div class="muted" style="font-size:11px;">Requested: ${esc(o.medicine_name)} \u00d7 ${o.quantity} \u2014 sent: ${esc(o.fulfilled_as_medicine_name)} \u00d7 ${o.fulfilled_as_quantity}</div>`;
@@ -270,9 +280,9 @@ function groupPartOrders(rows) {
 
 function exportRowsToExcel(rows, filename) {
   const aoa = [
-    ['Site', 'Ward', 'Medicine', 'Quantity', 'Status', 'Ordered by', 'Ordered at', 'Processed by', 'Processed at', 'Supplied at'],
+    ['Site', 'Ward', 'Medicine', 'Pack size', 'Quantity', 'Status', 'Ordered by', 'Ordered at', 'Processed by', 'Processed at', 'Supplied at'],
     ...rows.map(r => [
-      r._siteName || '', r._wardName || '', r.medicine_name, r.quantity, statusLabel(r.status),
+      r._siteName || '', r._wardName || '', r.medicine_name, r.pack_size || packSizes[r.medicine_name] || '', r.quantity, statusLabel(r.status),
       r._orderedByName || '', r.created_at ? new Date(r.created_at).toLocaleString('en-GB') : '',
       r._processedByName || '', r.processed_at ? new Date(r.processed_at).toLocaleString('en-GB') : '',
       r.supplied_at ? new Date(r.supplied_at).toLocaleString('en-GB') : '',
@@ -369,7 +379,7 @@ function renderSessionCard(session, allLines, nameById = {}) {
             ? attribution(statusLabel(o.status) + ' by', nameById[o.processed_by], o._latestUpdate || o.processed_at)
             : (o.approved_by ? attribution('Approved by', nameById[o.approved_by], o.approved_at) : '');
           return `<tr>
-          <td>${esc(o.medicine_name)}${actionedAttr}${fulfilledNote(o)}</td><td style="text-align:right;">${o.quantity}</td>
+          <td>${esc(o.medicine_name)}${packTag(o)}${actionedAttr}${fulfilledNote(o)}</td><td style="text-align:right;">${o.quantity}</td>
           <td style="text-align:right; width:40px;">${statusHtml}</td>
         </tr>`;
         }).join('')}
@@ -424,6 +434,10 @@ async function requireAuth(options = {}) {
   bankHolidays = (holidayRows || []).map(h => h.holiday_date);
   (cutoffRows || []).forEach(r => { processingCutoffs[r.day_type] = r.cutoff_time?.slice(0, 5) || processingCutoffs[r.day_type]; });
   (settingRows || []).forEach(r => { systemSettings[r.key] = r.value; });
+  try {
+    const { data: packRows } = await sb.from('drug_catalog').select('medicine_name, pack_size');
+    packSizes = Object.fromEntries((packRows || []).filter(r => r.pack_size).map(r => [r.medicine_name, r.pack_size]));
+  } catch (e) { /* pack sizes are display-only; carry on without */ }
 
   if (canOrder()) {
     const { data: uw } = await sb.from('user_wards').select('ward_id').eq('user_id', profile.id);
@@ -594,14 +608,36 @@ function buildAreaTiles() {
   return groups.map(g => ({ group: g, icon: iconFor[g] || '•', firstHref: links.find(l => l.group === g).href, label: g === 'Admin' ? (isSuperuser() ? 'System Admin' : 'User Management') : g }));
 }
 
+const PAGE_META = {
+  'sites.html': ['\ud83c\udfe5', 'Sites', 'Hospital sites that wards belong to.'],
+  'wards.html': ['\ud83d\udecf\ufe0f', 'Wards', 'Create wards, set top-up days, suspend them and control alternative-stock swaps.'],
+  'users.html': ['\ud83d\udc65', 'Users', 'Invite staff with permissions and wards pre-set, and manage existing accounts.'],
+  'titles.html': ['\ud83c\udff7\ufe0f', 'Titles', 'Job titles used as labels on accounts \u2014 permissions come from the tickboxes.'],
+  'drug-catalog.html': ['\ud83d\udc8a', 'Drug catalog', 'Every orderable medicine, its pack size and alternatives.'],
+  'stocklists.html': ['\ud83d\udccb', 'Stocklists', 'Per-ward min/max stock levels. Add or remove a drug across every ward.'],
+  'notifications.html': ['\ud83d\udd14', 'Notifications', 'Who is told what, and when.'],
+  'active-sessions.html': ['\ud83d\udfe2', 'Active sessions', 'Who is signed in right now.'],
+  'bank-holidays.html': ['\ud83d\udcc5', 'Bank holidays', 'Dates that change top-up and turnaround timing.'],
+  'system-settings.html': ['\u2699\ufe0f', 'System settings', 'Logos, order rules, checks and other system-wide switches.'],
+  'logs.html': ['\ud83d\udcdc', 'Logs', 'System activity and errors.'],
+  'topup-days.html': ['\ud83d\uddd3\ufe0f', 'Top-up days', 'Which days each ward is topped up.'],
+  'sessions.html': ['\ud83d\udce6', 'Pending orders', 'Pick, action and confirm ward requests.'],
+  'out-of-stock.html': ['\ud83d\udeab', 'To follow orders', 'Items awaiting supply.'],
+  'processed-history.html': ['\ud83d\udd52', 'Processed (48h)', 'Requests processed in the last 48 hours.'],
+};
+
 function renderPageNav(currentHref) {
   const el = document.getElementById('page-nav');
   if (!el) return;
   const links = buildNavLinks();
   const current = links.find(l => l.href === currentHref);
   const group = current ? links.filter(l => l.group === current.group) : [];
-  el.innerHTML = `<a href="home.html" class="btn ghost small">← Home</a>` +
-    group.map(l => `<a href="${l.href}" class="btn ${l.href === currentHref ? '' : 'ghost'} small">${esc(l.label)}</a>`).join('');
+  if (current && current.group === 'Admin') document.body.setAttribute('data-admin', '1');
+  const meta = PAGE_META[currentHref];
+  el.innerHTML = `<div class="nav-row"><a href="home.html" class="nav-home">\u2190 Home</a>` +
+    (group.length > 1 ? `<nav class="seg">${group.map(l => `<a href="${l.href}" class="${l.href === currentHref ? 'on' : ''}">${esc(l.label)}</a>`).join('')}</nav>` : '') +
+    `</div>` +
+    (meta ? `<div class="page-head"><div class="ph-icon">${meta[0]}</div><div><h1>${esc(meta[1])}</h1><p>${esc(meta[2])}</p></div></div>` : '');
 }
 
 // ---------- ADMIN SHARED HELPERS (sites/wards/topup-days pages) ----------
@@ -985,7 +1021,7 @@ async function openOverdueTopupPreview(wardId) {
   if (error) { bodyEl.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
   if (!data?.length) { bodyEl.innerHTML = `<div class="empty">No stocklist set up for this ward.</div>`; return; }
   bodyEl.innerHTML = `<table><thead><tr><th>Medicine</th><th>Max qty</th></tr></thead><tbody>
-    ${data.map(i => `<tr><td>${esc(i.medicine_name)}</td><td>${i.max_qty}</td></tr>`).join('')}
+    ${data.map(i => `<tr><td>${esc(i.medicine_name)}${packTag({ medicine_name: i.medicine_name })}</td><td>${i.max_qty}</td></tr>`).join('')}
   </tbody></table>`;
 }
 

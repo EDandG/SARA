@@ -101,7 +101,7 @@
       <table><thead><tr><th>Site</th><th>Ward</th><th>Medicine</th><th>Qty</th><th>Status</th><th>Ordered</th></tr></thead><tbody>
       ${lastResults.map(o => `<tr>
         <td>${esc(o._siteName)}</td><td>${esc(o._wardName)}</td>
-        <td>${esc(o.medicine_name)}${attribution('Processed by', o._processedByName, o.processed_at)}${fulfilledNote(o)}</td>
+        <td>${esc(o.medicine_name)}${packTag(o)}${attribution('Processed by', o._processedByName, o.processed_at)}${fulfilledNote(o)}</td>
         <td>${o.quantity}</td>
         <td><span class="badge ${o.status}">${statusLabel(o.status)}</span></td>
         <td class="muted">${fmtDate(o.created_at)}${o._orderedByName ? ` \u00b7 ${esc(o._orderedByName)}` : ''}</td>
