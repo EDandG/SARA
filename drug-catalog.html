@@ -47,8 +47,10 @@ async function renderDrugCatalog() {
       <p class="muted">Upload a CSV or Excel export. Choose which column(s) hold the drug name and, optionally, the pack size — by column letter, same as Excel (A, B …). Pack size is descriptive only; each ward still sets its own max qty when adding a drug from here. Entries already in the catalog are left alone; new ones are added.</p>
       <div class="row">
         <div><label>Drug name column(s)</label><input type="text" id="col-name" value="A" placeholder="e.g. A or A,B" /></div>
-        <div><label>Pack size column <span class="muted" style="font-weight:400;">(optional)</span></label><input type="text" id="col-pack" placeholder="e.g. B" /></div>
+        <div><label>Join columns with</label><select id="col-join"><option value=" ">a space</option><option value=" - ">a dash ( - )</option><option value=", ">a comma (, )</option><option value=" | ">a bar ( | )</option><option value="">nothing</option></select></div>
+        <div><label>Pack size column <span class="muted" style="font-weight:400;">(optional, stored separately)</span></label><input type="text" id="col-pack" placeholder="e.g. B" /></div>
       </div>
+      <p class="muted" style="margin:8px 0 0;"><b>Combining two columns into one name:</b> list both letters in the name box, e.g. <code class="small">A,B</code> (drug name in A, pack size in B). They are joined in that order using the separator you choose, so "Paracetamol 500mg tablets" + "100" becomes one entry. A preview of the first few combined names appears after you choose the file.</p>
       <label style="margin-top:10px; display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="skip-header" style="width:auto;" />First row is a header row (skip it)</label>
       <div class="file-drop" id="drop-zone" style="margin-top:12px;">Click to choose a CSV or Excel file, or drop one here</div>
       <input type="file" id="csv-input" accept=".csv,.xlsx,.xls" class="hidden" />
@@ -239,7 +241,7 @@ async function handleCatalogCsv() {
   catalogPreview = [];
   for (const row of rows) {
     const nameParts = nameCols.map(idx => String(row[idx] ?? '').trim()).filter(Boolean);
-    const name = nameParts.join(' ').trim();
+    const name = nameParts.join(document.getElementById('col-join').value).trim();
     if (!name || seen.has(name)) continue;
     seen.add(name);
     const pack = packCol >= 0 ? String(row[packCol] ?? '').trim() : '';
@@ -254,6 +256,8 @@ async function handleCatalogCsv() {
   const preview = document.getElementById('csv-preview');
   if (!catalogPreview.length) { preview.innerHTML = `<p class="muted" style="margin-top:12px;">No valid rows found \u2014 check the column letters and try again.</p>`; return; }
   preview.innerHTML = `
+    <p class="muted" style="margin-top:12px;"><b>Preview of the first entries:</b></p>
+    <ul style="margin:4px 0 0 18px; padding:0; font-size:13px;">${catalogPreview.slice(0, 5).map(i => `<li>${esc(i.medicine_name)}${i.pack_size ? ` <span class="muted">(pack size: ${esc(i.pack_size)})</span>` : ''}</li>`).join('')}</ul>
     <p class="muted" style="margin-top:12px;">${catalogPreview.length} row(s) parsed \u2014 ${newOnes.length} new, ${alreadyThere} already in the catalog (skipped on import).</p>
     <button class="btn magenta" id="confirm-catalog-import" style="margin-top:8px;">Import ${newOnes.length} new drug(s)</button>`;
 
