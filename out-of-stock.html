@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Stock Req — Out of stock</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
 </head>
 <body data-page="out-of-stock.html">
@@ -45,9 +48,10 @@ async function renderOutOfStock() {
         ${o.parent_order_id ? '<span class="badge part_supplied">To follow</span>' : ''}
         ${o.status === 'non_urgent' ? '<span class="badge non_urgent">Non-urgent</span>' : ''}
         ${attribution('Marked by', nameById[o.processed_by], o.processed_at)}</td><td>${o.quantity}</td>
-        <td style="text-align:right;"><button class="btn small magenta" data-supplied="${o.id}">Mark supplied</button></td></tr>`).join('')}
+        <td style="text-align:right; white-space:nowrap;">${o.session_id ? `<button class="btn small ghost" data-viewreq="${o.session_id}">View request</button> ` : ''}<button class="btn small magenta" data-supplied="${o.id}">Mark supplied</button></td></tr>`).join('')}
     </tbody></table>`}
   </div>`;
+  body.querySelectorAll('[data-viewreq]').forEach(b => b.onclick = () => openRequestSummary(b.dataset.viewreq));
   body.querySelectorAll('[data-supplied]').forEach(b => b.onclick = async () => {
     const { error } = await sb.rpc('mark_supplied', { target_order: b.dataset.supplied });
     if (error) return toast(error.message, true);

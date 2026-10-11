@@ -511,3 +511,22 @@ body[data-admin="1"] .row{ gap:16px; }
 }
 @media print{ .proc-foot, .seg, .nav-home{ display:none !important; } }
 body[data-admin="1"] label:has(input[type=checkbox]){ text-transform:none; letter-spacing:normal; font-size:13px; color:var(--text); font-weight:500; }
+
+/* ---- Request summary (what was actually sent) ---- */
+.proc-line.alt, .proc-line.part{ border-left-color:var(--purple); background:#faf8fe; }
+.proc-line.pend{ border-left-color:var(--honey); }
+.proc-line .pl-qty.sent{ background:var(--teal); }
+.proc-line .pl-qty.sent.less{ background:var(--purple); }
+.proc-line .pl-qty.sent.zero{ background:var(--red); }
+.proc-line .pl-qty{ flex-shrink:0; }
+.rs-chips{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+.rs-chip{ font-size:12px; padding:5px 12px; border-radius:20px; background:var(--slate-pale); color:var(--navy); border:1px solid var(--border-soft); }
+.rs-chip b{ font-size:14px; }
+.rs-chip.done{ background:var(--teal-pale); color:var(--teal-deep); }
+.rs-chip.alt, .rs-chip.part{ background:var(--purple-pale); color:var(--purple); }
+.rs-chip.oos{ background:var(--red-pale); color:var(--red); }
+.rs-chip.pend{ background:var(--amber-pale); color:var(--amber); }
+.rs-label{ font-size:11.5px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; color:var(--text-dim); }
+.rs-label.done{ color:var(--teal-deep); } .rs-label.oos{ color:var(--red); }
+.rs-label.alt, .rs-label.part{ color:var(--purple); } .rs-label.pend{ color:var(--amber); }
+tr.clickable{ cursor:pointer; }

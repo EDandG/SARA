@@ -3,7 +3,10 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Above-max approvals</title>
+<title>Stock Req — Above max stock waiting for approval</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
 </head>
 <body data-page="approvals.html">
@@ -41,7 +44,7 @@ async function renderApprovals() {
   const nameById = Object.fromEntries((users || []).map(u => [u.id, u.full_name]));
 
   body.innerHTML = `<div class="card">
-    <h2>Above-max approvals</h2>
+    <h2>Above max stock waiting for approval</h2>
     <p class="muted">Orders where a ward requested more than the stocklist's usual maximum. Approve as requested, or amend the quantity first.</p>
     ${!data?.length ? `<div class="empty">Nothing awaiting approval.</div>` : `
     <table><thead><tr><th>Ward</th><th>Medicine</th><th>Requested</th><th></th></tr></thead><tbody>

@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Stock Req — Processed History</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
 </head>
 <body data-page="processed-history.html">
@@ -81,7 +84,7 @@ async function renderProcessedHistory() {
     );
     const resultsEl = document.getElementById("ph-results");
     if (!filtered.length) { resultsEl.innerHTML = `<div class="empty">No matching items in the last 48 hours.</div>`; return; }
-    resultsEl.innerHTML = `<table><thead><tr><th>Ward</th><th>Medicine</th><th>Qty</th><th>Status</th><th>Actioned</th><th>By</th></tr></thead><tbody>
+    resultsEl.innerHTML = `<table><thead><tr><th>Ward</th><th>Medicine</th><th>Qty</th><th>Status</th><th>Actioned</th><th>By</th><th></th></tr></thead><tbody>
       ${filtered.map(r => `<tr>
         <td>${esc(wardName(r.ward_id))}</td>
         <td>${esc(r.medicine_name)}${packTag(r)}${fulfilledNote(r)}</td>
@@ -89,8 +92,10 @@ async function renderProcessedHistory() {
         <td><span class="badge ${r.status}">${statusLabel(r.status)}</span></td>
         <td class="muted">${fmtDate(r._actionedAt)}</td>
         <td class="muted">${esc(nameById[r.processed_by || r.rejected_by] || "—")}</td>
+        <td style="text-align:right;">${r.session_id ? `<button class="btn small ghost" data-viewreq="${r.session_id}">View request</button>` : ""}</td>
       </tr>`).join("")}
     </tbody></table>`;
+    resultsEl.querySelectorAll("[data-viewreq]").forEach(b => b.onclick = () => openRequestSummary(b.dataset.viewreq));
   }
   renderRows();
   document.getElementById("ph-drug").oninput = renderRows;

@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Stock Req — Sessions</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
 </head>
 <body data-page="sessions.html">
@@ -104,7 +107,7 @@ async function renderPending() {
           <td>${esc(wardName(s.ward_id))}</td>
           <td>${esc(nameById[s.picking_confirmed_by] || '\u2014')}</td>
           <td class="muted">${fmtDate(s.picking_confirmed_at)}</td>
-          <td style="text-align:right;">${isOwnPick
+          <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-viewreq="${s.id}">View</button> ${isOwnPick
             ? `<span class="muted" style="font-size:11.5px;">You picked this \u2014 someone else must check it</span>`
             : `<button class="btn small magenta" data-check="${s.id}">Mark as checked</button>`}</td>
         </tr>`;
@@ -154,6 +157,7 @@ async function renderPending() {
     const id = b.dataset.start || b.dataset.continue || b.dataset.view;
     openProcessingModal(id);
   });
+  body.querySelectorAll('[data-viewreq]').forEach(b => b.onclick = () => openRequestSummary(b.dataset.viewreq));
   body.querySelectorAll('[data-check]').forEach(b => b.onclick = () => {
     const id = b.dataset.check;
     confirmDialog('Mark as checked', 'Confirm every item on this request has been checked against what was actually picked?', 'Mark checked', async () => {
@@ -264,7 +268,7 @@ async function renderProcessingModalBody(sessionId) {
     mount.innerHTML = `${head(submittedLine)}
       <div class="proc-body">
         <p class="proc-note">Picked by ${esc(nameById[s.picking_confirmed_by] || '\u2014')}${s.check_waived ? ' \u2014 second-person check not required at the time.' : `, checked by ${esc(nameById[s.checked_by] || '\u2014')} on ${fmtDate(s.checked_at)}.`}</p>
-        ${lines.map(o => lineCard(o)).join('')}
+        ${requestSummaryBodyHtml(allLines || [], nameById)}
       </div>
       <div class="proc-foot"><span class="hint"></span><div class="btns">${closeBtn}</div></div>`;
     return;
@@ -276,7 +280,7 @@ async function renderProcessingModalBody(sessionId) {
     mount.innerHTML = `${head(submittedLine)}
       <div class="proc-body">
         <p class="proc-note">Picked by ${esc(nameById[s.picking_confirmed_by] || '\u2014')} on ${fmtDate(s.picking_confirmed_at)}. Awaiting an independent check.</p>
-        ${lines.map(o => lineCard(o)).join('')}
+        ${requestSummaryBodyHtml(allLines || [], nameById)}
       </div>
       <div class="proc-foot">
         <span class="hint">${isOwnPick ? 'You picked this \u2014 someone else must check it.' : ''}</span>

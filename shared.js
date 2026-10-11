@@ -368,7 +368,7 @@ function renderSessionCard(session, allLines, nameById = {}) {
     <div style="border:1px solid var(--border); border-radius:10px; padding:14px; margin-top:10px;">
       <div style="display:flex; justify-content:space-between; align-items:center; font-size:13px; color:var(--text-dim);">
         <span>${fmtDate(session.created_at)}${nameById[session.submitted_by] ? ` · by ${esc(nameById[session.submitted_by])}` : ''} · ${lines.length} item${lines.length > 1 ? 's' : ''}${typeBadge}</span>
-        ${pendingCount ? `<span class="badge pending">${pendingCount} pending</span>` : processedBadge}
+        <span style="display:flex; align-items:center; gap:8px;">${pendingCount ? `<span class="badge pending">${pendingCount} pending</span>` : processedBadge}<button class="btn small ghost" onclick="openRequestSummary('${session.id}')">View details</button></span>
       </div>
       <table style="margin-top:8px;"><tbody>
         ${lines.map(o => {
@@ -385,6 +385,103 @@ function renderSessionCard(session, allLines, nameById = {}) {
         }).join('')}
       </tbody></table>
     </div>`;
+}
+
+// ---------- REQUEST SUMMARY (click-through for any adhoc / top-up request) ----------
+// Shows every drug on a request: what was asked for, what was actually sent,
+// and what happened to it (sent in full, alternative, part supplied, out of
+// stock, duplicate, ...). Used from every list that shows a request.
+function summariseRequestLine(o, childOf, nameById) {
+  const child = childOf.get(o.id);
+  const by = o.processed_by && nameById[o.processed_by] ? ` · ${esc(nameById[o.processed_by])}` : '';
+  const when = o.processed_at ? ` · ${fmtDate(o.processed_at)}` : '';
+  const r = { sent: 0, cls: '', label: statusLabel(o.status), notes: [] };
+  if (o.fulfilled_as_medicine_name) {
+    r.sent = o.fulfilled_as_quantity || 0; r.cls = 'alt'; r.label = 'Alternative sent';
+    r.notes.push(`Sent <b>${esc(o.fulfilled_as_medicine_name)} × ${o.fulfilled_as_quantity}</b> instead${by}${when}`);
+  } else if (o.status === 'complete') {
+    r.sent = o.quantity; r.cls = 'done'; r.label = 'Sent in full';
+    if (o.out_of_stock_at && o.supplied_at) r.notes.push(`Was out of stock — supplied ${fmtDate(o.supplied_at)}`);
+    else if (o.processed_at) r.notes.push(`${by ? by.slice(3) + ' · ' : ''}${fmtDate(o.processed_at)}`);
+  } else if (o.status === 'part_supplied') {
+    const rest = child && child.status === 'complete' ? child.quantity : 0;
+    r.sent = (o.supplied_qty || 0) + rest; r.cls = 'part';
+    if (child && child.status === 'complete') { r.label = 'Sent in full (in two parts)'; r.cls = 'done'; r.notes.push(`${o.supplied_qty} sent first, then ${child.quantity} on ${fmtDate(child.supplied_at || child.processed_at)}`); }
+    else if (child && child.status === 'superseded') { r.label = 'Part supplied'; r.notes.push(`${o.supplied_qty} sent; remainder (${child.quantity}) resupplied under a later request`); }
+    else { r.label = 'Part supplied'; r.notes.push(`${o.supplied_qty || 0} sent, <b>${child ? child.quantity : o.quantity - (o.supplied_qty || 0)} still to follow</b>${by}${when}`); }
+  } else if (o.status === 'out_of_stock') {
+    r.cls = 'oos'; r.label = 'Out of stock'; r.notes.push(`Nothing sent — on the to-follow list${by}${when}`);
+  } else if (o.status === 'pending' || o.status === 'pending_approval') {
+    r.cls = 'pend'; r.notes.push(o.status === 'pending' ? 'Not yet actioned' : 'Waiting for above-max approval');
+  } else {
+    r.cls = 'other';
+    if (o.status === 'non_urgent') r.notes.push(`Nothing sent yet — marked non-urgent${by}${when}`);
+    else if (o.status === 'rejected') r.notes.push('Rejected — nothing sent');
+    else if (o.status === 'superseded') r.notes.push('Replaced by a later request — nothing sent from this one');
+    else if (o.status === 'duplicate') r.notes.push(`Marked as a duplicate — nothing sent${by}${when}`);
+  }
+  if (o.disposition_reason) r.notes.push(`Reason: ${esc(o.disposition_reason)}`);
+  return r;
+}
+
+// Body HTML (chips + one card per drug). `all` = every order row for the session.
+function requestSummaryBodyHtml(all, nameById = {}) {
+  const childOf = new Map();
+  all.forEach(o => { if (o.parent_order_id) childOf.set(o.parent_order_id, o); });
+  const parents = all.filter(o => !o.parent_order_id).sort((a, b) => String(a.medicine_name).localeCompare(String(b.medicine_name)));
+  const rows = parents.map(o => ({ o, r: summariseRequestLine(o, childOf, nameById) }));
+  const n = (f) => rows.filter(f).length;
+  const chips = [
+    [rows.length, rows.length === 1 ? 'drug' : 'drugs', ''],
+    [n(x => x.r.cls === 'done'), 'sent in full', 'done'],
+    [n(x => x.r.cls === 'alt'), 'alternative sent', 'alt'],
+    [n(x => x.r.cls === 'part'), 'part supplied', 'part'],
+    [n(x => x.r.cls === 'oos'), 'out of stock', 'oos'],
+    [n(x => x.r.cls === 'pend'), 'not yet actioned', 'pend'],
+    [n(x => x.r.cls === 'other'), 'other', 'other'],
+  ].filter(c => c[0] > 0 || c[2] === '');
+  return `<div class="rs-chips">${chips.map(c => `<span class="rs-chip ${c[2]}"><b>${c[0]}</b> ${c[1]}</span>`).join('')}</div>
+    ${rows.map(({ o, r }) => `<div class="proc-line ${r.cls}">
+      <div class="pl-main">
+        <div class="pl-name">${esc(o.medicine_name)}${packTag(o)}</div>
+        <div class="pl-meta"><span class="rs-label ${r.cls}">${r.label}</span></div>
+        ${r.notes.map(t => `<div class="pl-meta">${t}</div>`).join('')}
+      </div>
+      <div class="pl-qty"><b>${o.quantity}</b><span>Requested</span></div>
+      <div class="pl-qty sent ${r.sent === 0 ? 'zero' : (r.sent < o.quantity ? 'less' : '')}"><b>${r.sent}</b><span>Sent</span></div>
+    </div>`).join('')}`;
+}
+
+// Who picked / checked, as a sentence for the top of the summary.
+function requestPickLine(s, nameById) {
+  const bits = [];
+  if (s.picking_confirmed_at) bits.push(`Picked by ${esc(nameById[s.picking_confirmed_by] || '—')} on ${fmtDate(s.picking_confirmed_at)}`);
+  if (s.checked_at) bits.push(s.check_waived ? 'second-person check not required at the time' : `checked by ${esc(nameById[s.checked_by] || '—')} on ${fmtDate(s.checked_at)}`);
+  else if (s.picking_confirmed_at) bits.push('awaiting an independent check');
+  return bits.join(' — ');
+}
+
+async function openRequestSummary(sessionId) {
+  openModal(`<div id="proc-modal-body"><div class="proc-body"><p class="muted">Loading…</p></div></div>`, true);
+  const mount = document.getElementById('proc-modal-body');
+  const [{ data: s, error }, { data: all }, { data: names }] = await Promise.all([
+    sb.from('order_sessions').select('*').eq('id', sessionId).single(),
+    sb.from('orders').select('*').eq('session_id', sessionId),
+    sb.rpc('staff_display_names'),
+  ]);
+  if (error || !s) { mount.innerHTML = `<div class="proc-body"><div class="empty">Could not load this request — it may not exist, or you may not have access.</div></div><div class="proc-foot"><span class="hint"></span><div class="btns"><button class="btn ghost" onclick="closeModal()">Close</button></div></div>`; return; }
+  const nameById = Object.fromEntries((names || []).map(n => [n.id, n.full_name]));
+  const isTopup = s.order_type === 'topup';
+  const pickLine = requestPickLine(s, nameById);
+  mount.innerHTML = `<div class="proc-head">
+      <div><h3>${esc(wardName(s.ward_id))}</h3><p class="ph-sub">Submitted by ${esc(nameById[s.submitted_by] || '—')} · ${fmtDate(s.created_at)}</p></div>
+      <span class="ph-tag ${isTopup ? 'topup' : ''}">${isTopup ? 'Top-up request' : 'Adhoc request'}</span>
+    </div>
+    <div class="proc-body">
+      ${pickLine ? `<p class="proc-note">${pickLine}.</p>` : ''}
+      ${requestSummaryBodyHtml(all || [], nameById)}
+    </div>
+    <div class="proc-foot"><span class="hint"></span><div class="btns"><button class="btn ghost" onclick="closeModal()">Close</button></div></div>`;
 }
 
 // ---------- AUTH GUARD ----------
@@ -568,7 +665,7 @@ function buildNavLinks() {
     links.push({ href: 'processed-history.html', label: 'Processed (48h)', group: 'Processing' });
   }
   if (canApproveOrders()) {
-    links.push({ href: 'approvals.html', label: 'Above-max approvals', group: 'Approvals' });
+    links.push({ href: 'approvals.html', label: 'Above max stock waiting for approval', group: 'Above max stock waiting for approval' });
   }
   if (isSuperuser()) {
     links.push({ href: 'sites.html', label: 'Sites', group: 'Admin' });
@@ -604,7 +701,7 @@ function buildNavLinks() {
 function buildAreaTiles() {
   const links = buildNavLinks();
   const groups = [...new Set(links.map(l => l.group))];
-  const iconFor = { Ordering:'🛒', Processing:'📦', Approvals:'✅', Admin:'⚙️', Governance:'🔎', Insights:'📊' };
+  const iconFor = { Ordering:'🛒', Processing:'📦', 'Above max stock waiting for approval':'✅', Admin:'⚙️', Governance:'🔎', Insights:'📊' };
   return groups.map(g => ({ group: g, icon: iconFor[g] || '•', firstHref: links.find(l => l.group === g).href, label: g === 'Admin' ? (isSuperuser() ? 'System Admin' : 'User Management') : g }));
 }
 
