@@ -64,7 +64,7 @@
     <div class="card" id="doneCard" style="display:none;">
       <h2>You&rsquo;re all set</h2>
       <p>Your account has been created. You sign in with your <strong>User ID</strong> and the password you just chose.</p>
-      <div class="idbox"><div class="muted">Your User ID</div><div class="big" id="doneUserId"></div></div>
+      <div class="idbox"><div class="muted">Your User ID</div><div class="big" id="doneUserId"></div><div class="muted" style="margin-top:8px;">Your initials</div><div class="big" id="doneInitials"></div></div>
       <button type="button" class="btn magenta" id="goBtn">Continue</button>
     </div>
   </div>
@@ -97,8 +97,8 @@ function clean(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, 
 function updatePreview() {
   const f = clean(document.getElementById('firstName').value), l = clean(document.getElementById('lastName').value);
   document.getElementById('idPreview').textContent = f && l
-    ? `Your User ID will be ${f}.${l} (a number is added if it is already taken).`
-    : 'Your User ID is created from your name.';
+    ? `Your User ID will be ${f}.${l} and your initials ${(f[0] + l[0]).toUpperCase()} (a number is added if either is already taken).`
+    : 'Your User ID and initials are created from your name.';
 }
 ['firstName', 'lastName'].forEach(id => document.getElementById(id).addEventListener('input', updatePreview));
 
@@ -148,6 +148,7 @@ document.getElementById('form').addEventListener('submit', async (e) => {
       password: pw1,
     });
     document.getElementById('doneUserId').textContent = r.user_id;
+    document.getElementById('doneInitials').textContent = r.initials || '';
     if (r.access_token && r.refresh_token) {
       const { error } = await sb.auth.setSession({ access_token: r.access_token, refresh_token: r.refresh_token });
       SIGNED_IN = !error;

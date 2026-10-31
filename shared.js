@@ -127,9 +127,17 @@ const canFreetextTempStock = () => !!profile?.can_freetext_temp_stock && canOrde
 function toast(msg, isErr = false) {
   const el = document.createElement('div');
   el.className = 'toast' + (isErr ? ' err' : '');
-  el.textContent = msg;
+  el.setAttribute('role', isErr ? 'alert' : 'status');
+  el.innerHTML = `<span class="toast-ic" aria-hidden="true">${isErr
+    ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 7v6M12 17v.1"/></svg>'
+    : '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>'}</span><span class="toast-tx"></span>`;
+  el.querySelector('.toast-tx').textContent = msg;
+  const life = isErr ? 5200 : 3200;
+  el.style.setProperty('--life', life + 'ms');
   document.getElementById('toast-root').appendChild(el);
-  setTimeout(() => el.remove(), 3200);
+  const kill = () => { el.classList.add('out'); setTimeout(() => el.remove(), 180); };
+  el.onclick = kill;
+  setTimeout(kill, life);
 }
 function fmtDate(iso) {
   if (!iso) return '—';
@@ -251,12 +259,35 @@ async function suggestAvailableUserId(fullName) {
   return candidate;
 }
 
+let _modalReturnFocus = null;
 function openModal(innerHtml, wide = false) {
   const root = document.getElementById('modal-root');
-  root.innerHTML = `<div class="modal-bg" id="modal-bg"><div class="modal${wide ? ' wide' : ''}">${innerHtml}</div></div>`;
+  _modalReturnFocus = document.activeElement;
+  root.innerHTML = `<div class="modal-bg" id="modal-bg"><div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true">${innerHtml}</div></div>`;
+  document.body.classList.add('modal-open');
   document.getElementById('modal-bg').onclick = (e) => { if (e.target.id === 'modal-bg') closeModal(); };
+  // focus the first field, else the main action (so Enter / Tab work straight away)
+  setTimeout(() => {
+    const m = root.querySelector('.modal'); if (!m) return;
+    const f = m.querySelector('input:not([type=hidden]):not([disabled]), textarea, select') || m.querySelector('.actions .btn:last-child, .btns .btn:last-child');
+    f?.focus({ preventScroll: true });
+  }, 30);
 }
-function closeModal() { document.getElementById('modal-root').innerHTML = ''; }
+function closeModal() {
+  document.getElementById('modal-root').innerHTML = '';
+  document.body.classList.remove('modal-open');
+  try { _modalReturnFocus?.focus?.({ preventScroll: true }); } catch (e) {}
+  _modalReturnFocus = null;
+}
+document.addEventListener('keydown', (e) => {
+  if (!document.querySelector('#modal-root .modal')) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeModal(); return; }
+  // Enter in a single-line field presses the dialog's main button
+  if (e.key === 'Enter' && e.target.matches?.('.modal input:not([type=checkbox]):not([type=radio])')) {
+    const main = document.querySelector('.modal .actions .btn:last-child');
+    if (main && !main.disabled) { e.preventDefault(); main.click(); }
+  }
+});
 window.closeModal = closeModal;
 
 // Two-step confirmation for changes to stocklists. Step 1 states exactly what
@@ -275,6 +306,7 @@ function confirmChange({ scope = 'ward', wardName = '', wardCount = 0, title, de
   const cancel = () => { closeModal(); if (onCancel) onCancel(); };
   const step2 = () => {
     openModal(`
+      ${modalIcon('warn')}
       <h3>Final confirmation</h3>
       ${banner}
       <p><b>${esc(title)}</b></p>
@@ -291,6 +323,7 @@ function confirmChange({ scope = 'ward', wardName = '', wardCount = 0, title, de
     };
   };
   openModal(`
+    ${modalIcon('ask')}
     <h3>Are you sure?</h3>
     ${banner}
     <p><b>${esc(title)}</b></p>
@@ -304,8 +337,14 @@ function confirmChange({ scope = 'ward', wardName = '', wardCount = 0, title, de
 }
 window.confirmChange = confirmChange;
 
+const MODAL_ICONS = {
+  warn: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v5M12 18.2v.1"/></svg>',
+  ask: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.5"/><path d="M9.2 9.3a2.9 2.9 0 015.5 1.2c0 1.9-2.7 2.3-2.7 4M12 17.8v.1"/></svg>',
+};
+function modalIcon(kind) { return `<div class="modal-ic ${kind === 'warn' ? 'warn' : ''}">${MODAL_ICONS[kind] || MODAL_ICONS.ask}</div>`; }
 function confirmDialog(title, body, confirmLabel, onConfirm, danger = false) {
   openModal(`
+    ${modalIcon(danger ? 'warn' : 'ask')}
     <h3>${esc(title)}</h3>
     <p class="muted">${body}</p>
     <div class="actions">
@@ -313,6 +352,7 @@ function confirmDialog(title, body, confirmLabel, onConfirm, danger = false) {
       <button class="btn ${danger ? 'danger' : 'magenta'}" id="modal-confirm-btn">${esc(confirmLabel)}</button>
     </div>`);
   document.getElementById('modal-confirm-btn').onclick = () => { closeModal(); onConfirm(); };
+  if (danger) setTimeout(() => document.querySelector('.modal .actions .btn.ghost')?.focus(), 40);   // destructive: default focus is Cancel
 }
 
 function groupPartOrders(rows) {
@@ -702,6 +742,7 @@ async function requireAuth(options = {}) {
   wireLogout();
   buildSideNav();
   loadBanner();
+  maybePromptForEmail();
   startNewOrderPolling();
   startSessionHeartbeat();
   renderPageNav(document.body.dataset.page || '');
@@ -756,6 +797,37 @@ function startSessionHeartbeat() {
   };
   tick();
   sessionHeartbeatTimer = setInterval(tick, 60000);
+}
+
+// ---------- Ask people with no email linked to add one (for self-service password reset) ----------
+function maybePromptForEmail() {
+  document.getElementById('email-prompt')?.remove();
+  if (!profile || profile.email_hash) return;
+  try { if (sessionStorage.getItem('emailPromptDismissed')) return; } catch (e) {}
+  const bannerRoot = document.getElementById('banner-root'); if (!bannerRoot) return;
+  const el = document.createElement('div'); el.id = 'email-prompt'; el.className = 'hbanner-stack';
+  el.innerHTML = `<div class="hbanner info" role="status"><span class="ic" aria-hidden="true">\u2709\ufe0f</span>
+    <div class="tx">Add your email address so you can reset your own password if you ever forget it.</div>
+    <button class="btn small magenta" id="ep-add" style="flex:none;">Add email</button>
+    <button class="btn small ghost" id="ep-later" style="flex:none;">Not now</button></div>`;
+  bannerRoot.before(el);
+  document.getElementById('ep-later').onclick = () => { try { sessionStorage.setItem('emailPromptDismissed', '1'); } catch (e) {} el.remove(); };
+  document.getElementById('ep-add').onclick = () => {
+    openModal(`${modalIcon('ask')}<h3>Add your email</h3>
+      <p class="muted">Used only to email you a reset link if you forget your password (or an administrator resets it for you). It is stored securely and never shown in the app. Once added, only an administrator can change it.</p>
+      <label>Email address</label><input type="email" id="ep-email" placeholder="name@nhs.net" autocomplete="email" />
+      <div class="modal-error" id="ep-err"></div>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="ep-save">Save</button></div>`);
+    document.getElementById('ep-save').onclick = async () => {
+      const email = document.getElementById('ep-email').value.trim();
+      if (!email) { document.getElementById('ep-err').textContent = 'Enter your email address.'; return; }
+      const { data: { session } } = await sb.auth.getSession();
+      const res = await fetch(`${FN_BASE}/admin-set-user-email`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ target_user_id: profile.id, email }) });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) { document.getElementById('ep-err').textContent = out.error || 'Could not save.'; return; }
+      profile.email_hash = 'set'; closeModal(); el.remove(); toast('Email saved.');
+    };
+  };
 }
 
 // ---------- BANNERS (ported from the Pharmacy Portal) ----------

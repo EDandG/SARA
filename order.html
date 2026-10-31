@@ -119,7 +119,7 @@ async function openTempStockModal() {
   const catalog = catalogRows || [];
   openModal(`
     <h3>Temp stock</h3>
-    <p class="muted">Only Lead Pharmacist logins can order an item that isn't on the ward's stocklist. Pick from the drug catalog \u2014 if what's needed isn't listed, a developer can add it there first.</p>
+    <p class="muted">Order any drug from the drug catalog, even if it isn't on this ward's stocklist. It is marked as <b>Temp stock</b> on the order. If what's needed isn't listed, a developer can add it to the catalog first.</p>
     <label>Item</label>
     <select id="ts-name">${catalog.length ? catalog.map(c => `<option value="${esc(c.medicine_name)}">${esc(c.medicine_name)}${c.pack_size ? ` (${esc(c.pack_size)})` : ''}</option>`).join('') : '<option value="">Catalog is empty</option>'}</select>
     <label style="margin-top:10px;">Quantity</label>

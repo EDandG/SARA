@@ -103,14 +103,14 @@ async function renderPending() {
     if (!list.length) return `<div class="empty">Nothing awaiting a check right now.</div>`;
     return `<table><thead><tr><th>Ward</th><th>Picked by</th><th>Picked</th><th></th></tr></thead><tbody>
       ${list.map(s => {
-        const isOwnPick = s.picking_confirmed_by === profile.id;
+        const isOwnPick = s.picking_confirmed_by === profile.id && !profile.can_check_own_picking;
         return `<tr>
           <td>${esc(wardName(s.ward_id))}</td>
           <td>${esc(nameById[s.picking_confirmed_by] || '\u2014')}</td>
           <td class="muted">${fmtDate(s.picking_confirmed_at)}</td>
           <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-viewreq="${s.id}">View</button> ${isOwnPick
             ? `<span class="muted" style="font-size:11.5px;">You picked this \u2014 someone else must check it</span>`
-            : `<button class="btn small magenta" data-check="${s.id}">Mark as checked</button>`}</td>
+            : `<button class="btn small magenta" data-review="${s.id}">Review &amp; check</button>`}</td>
         </tr>`;
       }).join('')}
     </tbody></table>`;
@@ -188,6 +188,7 @@ async function renderPending() {
     openProcessingModal(id);
   });
   body.querySelectorAll('[data-viewreq]').forEach(b => b.onclick = () => openRequestSummary(b.dataset.viewreq));
+  body.querySelectorAll('[data-review]').forEach(b => b.onclick = () => openCheckReview(b.dataset.review));
   body.querySelectorAll('[data-check]').forEach(b => b.onclick = () => {
     const id = b.dataset.check;
     confirmDialog('Mark as checked', 'Confirm every item on this request has been checked against what was actually picked?', 'Mark checked', async () => {
@@ -195,6 +196,76 @@ async function renderPending() {
       if (checkErr) return toast(checkErr.message, true);
       toast('Marked as checked.');
       renderPending();
+    });
+  });
+}
+
+// ---------- Second-person check: review the processed lines, correct any, then mark as checked ----------
+async function openCheckReview(sessionId) {
+  openModal(`<div id="proc-modal-body"><div class="proc-body"><p class="muted">Loading\u2026</p></div></div>`, true);
+  await renderCheckReview(sessionId);
+}
+async function renderCheckReview(sessionId) {
+  const mount = document.getElementById('proc-modal-body'); if (!mount) return;
+  const [{ data: s }, { data: all }, { data: names }] = await Promise.all([
+    sb.from('order_sessions').select('*').eq('id', sessionId).single(),
+    sb.from('orders').select('*').eq('session_id', sessionId).order('medicine_name'),
+    sb.rpc('staff_display_names'),
+  ]);
+  if (!s) { mount.innerHTML = `<div class="proc-body"><div class="empty">Could not load this request.</div></div>`; return; }
+  const nm = Object.fromEntries((names || []).map(n => [n.id, n.full_name]));
+  const parents = (all || []).filter(o => !o.parent_order_id);
+  const childOf = (id) => (all || []).find(o => o.parent_order_id === id);
+  const already = !!s.checked_at;
+  const lineHtml = (o) => {
+    const c = childOf(o.id);
+    let outcome;
+    if (o.fulfilled_as_medicine_name) outcome = `Alternative sent: ${esc(o.fulfilled_as_medicine_name)} \u00d7 ${o.fulfilled_as_quantity}`;
+    else if (o.status === 'complete') outcome = `Supplied in full (${o.quantity})`;
+    else if (o.status === 'part_supplied') outcome = `Part supplied: ${o.supplied_qty} sent, ${c ? c.quantity : o.quantity - (o.supplied_qty || 0)} to follow`;
+    else if (o.status === 'out_of_stock') outcome = 'Out of stock \u2014 nothing sent';
+    else outcome = statusLabel(o.status);
+    const correctable = !already && ['complete', 'part_supplied', 'out_of_stock'].includes(o.status) && !o.fulfilled_as_medicine_name && (!c || c.status === 'out_of_stock');
+    return `<tr>
+      <td>${esc(o.medicine_name)}${packTag(o)}${o.corrected_at ? `<div class="muted" style="font-size:11.5px;">Corrected by ${esc(nm[o.corrected_by] || '\u2014')} \u00b7 ${esc(o.correction_note || '')}</div>` : ''}</td>
+      <td>${o.quantity}</td><td>${outcome}</td>
+      <td style="text-align:right;">${correctable ? `<button class="btn small ghost" data-correct="${o.id}">Correct</button>` : ''}</td></tr>
+      <tr id="cor-${o.id}" class="hidden"><td colspan="4"><div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; padding:6px 0;">
+        <div><label>Should be</label><select id="cor-out-${o.id}"><option value="complete">Supplied in full</option><option value="part_supplied">Part supplied</option><option value="out_of_stock">Out of stock</option></select></div>
+        <div id="cor-qtywrap-${o.id}" class="hidden"><label>Quantity sent</label><input type="number" min="1" max="${Math.max(o.quantity - 1, 1)}" id="cor-qty-${o.id}" style="width:90px;" /></div>
+        <div style="flex:1 1 220px;"><label>Reason for correction</label><input type="text" id="cor-note-${o.id}" placeholder="e.g. Only 2 boxes actually picked" /></div>
+        <button class="btn small magenta" data-apply="${o.id}">Apply correction</button></div></td></tr>`;
+  };
+  mount.innerHTML = `<div class="proc-head"><div><h3>Check: ${esc(wardName(s.ward_id))}</h3>
+      <p class="ph-sub">Picked by ${esc(nm[s.picking_confirmed_by] || '\u2014')} \u00b7 ${fmtDate(s.picking_confirmed_at)}</p></div></div>
+    <div class="proc-body">
+      <p class="proc-note">Check each line against what was actually picked. If something is wrong, use <b>Correct</b> before marking the request as checked.</p>
+      <table><thead><tr><th>Medicine</th><th>Ordered</th><th>Recorded outcome</th><th></th></tr></thead><tbody>${parents.map(lineHtml).join('')}</tbody></table>
+    </div>
+    <div class="proc-foot"><span class="hint"></span><div class="btns"><button class="btn ghost" onclick="closeModal(); renderPending();">Close</button>
+      ${already ? '' : `<button class="btn magenta" id="review-mark-checked">Mark as checked</button>`}</div></div>`;
+  mount.querySelectorAll('[data-correct]').forEach(b => b.onclick = () => document.getElementById('cor-' + b.dataset.correct).classList.toggle('hidden'));
+  parents.forEach(o => {
+    const sel = document.getElementById('cor-out-' + o.id); if (!sel) return;
+    sel.onchange = () => document.getElementById('cor-qtywrap-' + o.id).classList.toggle('hidden', sel.value !== 'part_supplied');
+  });
+  mount.querySelectorAll('[data-apply]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.apply, out = document.getElementById('cor-out-' + id).value;
+    const qty = parseInt(document.getElementById('cor-qty-' + id).value, 10);
+    const note = document.getElementById('cor-note-' + id).value.trim();
+    if (!note) return toast('Give a short reason for the correction.', true);
+    if (out === 'part_supplied' && !(qty >= 1)) return toast('Enter the quantity actually sent.', true);
+    const { error } = await sb.rpc('checker_correct_line', { target_order: id, outcome: out, supplied_quantity: out === 'part_supplied' ? qty : null, note });
+    if (error) return toast(error.message, true);
+    toast('Correction recorded.');
+    renderCheckReview(sessionId);
+  });
+  document.getElementById('review-mark-checked')?.addEventListener('click', () => {
+    confirmDialog('Mark as checked', 'Confirm every item on this request has been checked against what was actually picked?', 'Mark checked', async () => {
+      const { error } = await sb.rpc('mark_session_checked', { target_session: sessionId });
+      if (error) return toast(error.message, true);
+      toast('Marked as checked.');
+      closeModal(); renderPending();
     });
   });
 }

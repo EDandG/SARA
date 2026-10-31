@@ -100,7 +100,7 @@ async function renderLogs() {
 
   // Shared "are you really sure" step: type the word, re-enter the password, then call the RPC.
   function confirmWipe({ title, text, word, rpc, done }) {
-    openModal(`<h3>${esc(title)}</h3>
+    openModal(`${modalIcon('warn')}<h3>${esc(title)}</h3>
       <p>${text}</p>
       <label>Type <b>${esc(word)}</b> to confirm</label>
       <input type="text" id="wipe-word" autocomplete="off" />
