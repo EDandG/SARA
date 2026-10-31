@@ -38,8 +38,9 @@
 async function renderPending() {
   const body = document.getElementById('body');
 
-  const { data: pendingLines, error } = await sb.from('orders').select('session_id').eq('status', 'pending');
+  const { data: pendingLinesAll, error } = await sb.from('orders').select('id, session_id, ward_id, medicine_name, quantity, pack_size, created_at').eq('status', 'pending').order('created_at');
   if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  const pendingLines = pendingLinesAll;
   const openSessionIds = [...new Set((pendingLines || []).map(l => l.session_id).filter(Boolean))];
 
   const [{ data: sessionsData }, { data: awaitingCheckData }] = await Promise.all([
@@ -124,6 +125,35 @@ async function renderPending() {
       ${canCheckPicking() && pickingCheckRequired() ? `<div class="qs-tile navy"><b>${(awaitingCheckData || []).length}</b><span>Awaiting check</span></div>` : ''}
     </div>`;
 
+  // Due today / due tomorrow, by the cut-off rules. "Today" includes anything overdue;
+  // "tomorrow" is what came in after today's cut-off (it lands on the next working day).
+  const todayD = dateOnly(new Date());
+  const tomorrowIso = isoDate(nextWorkingDay(todayD));
+  const todayIso = isoDate(todayD);
+  const dueToday = [], dueTomorrow = [];
+  (pendingLines || []).forEach(l => {
+    const t = isoDate(targetProcessingDate(l.created_at));
+    if (t <= todayIso) dueToday.push(l); else if (t === tomorrowIso) dueTomorrow.push(l);
+  });
+  const dueRows = (list, showLate) => {
+    if (!list.length) return `<div class="empty">Nothing here.</div>`;
+    const byWard = {};
+    list.forEach(l => { (byWard[l.ward_id] = byWard[l.ward_id] || []).push(l); });
+    return `<table><thead><tr><th>Ward</th><th>Medicine</th><th>Qty</th><th>Submitted</th><th></th></tr></thead><tbody>` +
+      Object.entries(byWard).sort((a, b) => wardName(a[0]).localeCompare(wardName(b[0]))).map(([wid, ls]) =>
+        ls.map((l, i) => `<tr>
+          <td>${i === 0 ? `<b>${esc(wardName(wid))}</b>` : ''}</td>
+          <td>${esc(l.medicine_name)}${packTag(l)}</td><td>${l.quantity}</td>
+          <td class="muted">${fmtDate(l.created_at)}${showLate ? ' <span class="badge pending_approval">After cut-off</span>' : ''}</td>
+          <td style="text-align:right;">${l.session_id ? `<button class="btn small ghost" data-view="${l.session_id}">Open</button>` : ''}</td></tr>`).join('')).join('') +
+      `</tbody></table>`;
+  };
+  const dueHtml = `<div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap;">
+      <div class="card" style="flex:1; min-width:320px;"><h2>Due today <span class="muted">(${dueToday.length} items)</span></h2>${dueRows(dueToday, false)}</div>
+      <div class="card" style="flex:1; min-width:320px;"><h2>Due tomorrow <span class="muted">(${dueTomorrow.length} items)</span></h2>
+        <p class="muted" style="margin-top:0;">Submitted after the cut-off — worth a look in case any are needed sooner.</p>${dueRows(dueTomorrow, true)}</div>
+    </div>`;
+
   const adhocSessions = (sessionsData || []).filter(s => s.order_type !== 'topup');
   const topupSessions = (sessionsData || []).filter(s => s.order_type === 'topup');
 
@@ -137,7 +167,7 @@ async function renderPending() {
   // processing roles get the same data as one combined list, since the
   // adhoc/topup split matters most for whoever's triaging bulk volume.
   if (profile.role === 'bulk_assistant') {
-    body.innerHTML = `${summaryHtml}
+    body.innerHTML = `${summaryHtml}${dueHtml}
       <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap;">
         <div class="card" style="flex:1; min-width:320px;">
           <h2>Adhoc queue <span class="muted">(${adhocSessions.length})</span></h2>
@@ -150,7 +180,7 @@ async function renderPending() {
       </div>
       ${awaitingCheckCard}`;
   } else {
-    body.innerHTML = `${summaryHtml}<div class="card"><h2>Pending orders</h2>${queueTableHtml(sessionsData || [])}</div>${awaitingCheckCard}`;
+    body.innerHTML = `${summaryHtml}${dueHtml}<div class="card"><h2>Pending orders</h2>${queueTableHtml(sessionsData || [])}</div>${awaitingCheckCard}`;
   }
 
   body.querySelectorAll('[data-start], [data-continue], [data-view]').forEach(b => b.onclick = () => {
@@ -267,7 +297,7 @@ async function renderProcessingModalBody(sessionId) {
   if (s.checked_at) {
     mount.innerHTML = `${head(submittedLine)}
       <div class="proc-body">
-        <p class="proc-note">Picked by ${esc(nameById[s.picking_confirmed_by] || '\u2014')}${s.check_waived ? ' \u2014 second-person check not required at the time.' : `, checked by ${esc(nameById[s.checked_by] || '\u2014')} on ${fmtDate(s.checked_at)}.`}</p>
+        <p class="proc-note">${pickAuditLine(s, nameById)}.</p>
         ${requestSummaryBodyHtml(allLines || [], nameById)}
       </div>
       <div class="proc-foot"><span class="hint"></span><div class="btns">${closeBtn}</div></div>`;
@@ -279,7 +309,7 @@ async function renderProcessingModalBody(sessionId) {
     const isOwnPick = s.picking_confirmed_by === profile.id;
     mount.innerHTML = `${head(submittedLine)}
       <div class="proc-body">
-        <p class="proc-note">Picked by ${esc(nameById[s.picking_confirmed_by] || '\u2014')} on ${fmtDate(s.picking_confirmed_at)}. Awaiting an independent check.</p>
+        <p class="proc-note">${pickAuditLine(s, nameById)}.</p>
         ${requestSummaryBodyHtml(allLines || [], nameById)}
       </div>
       <div class="proc-foot">
@@ -342,7 +372,7 @@ async function renderProcessingModalBody(sessionId) {
       <div class="proc-toolbar">
         <span class="me">Process started by ${esc(profile.full_name)}</span>
         <span class="spacer"></span>
-        <button class="btn ghost small" id="proc-print-btn">Print picking list</button>
+        <button class="btn ghost small" id="proc-print-btn">Download picking list (PDF)</button>
       </div>
       ${lines.map(o => lineCard(o, actionsFor(o))).join('')}
     </div>

@@ -74,7 +74,7 @@ let myWards = [];
 let bankHolidays = [];
 let processingCutoffs = { weekday: '14:00', weekend_or_holiday: '14:00' };
 let packSizes = {}; // medicine name -> pack size, from the drug catalog (loaded by requireAuth)
-let systemSettings = { topup_window_start: '00:01', topup_window_end: '17:00', duplicate_window_hours: '48', overdue_topup_preview_enabled: 'false', trust_logo_data_url: '', login_logo_data_url: '', order_history_days: '7', picking_check_required: 'true' };
+let systemSettings = { topup_window_start: '00:01', topup_window_end: '17:00', duplicate_window_hours: '48', overdue_topup_preview_enabled: 'false', trust_logo_data_url: '', login_logo_data_url: '', order_history_days: '7', picking_check_required: 'true', no_check_label: 'Processed', feature_insights_enabled: 'false', feature_bi_enabled: 'false' };
 let notifyPollTimer = null;
 let lastSeenOrdersAt = null;
 
@@ -85,6 +85,7 @@ const isSuperuser  = () => isDeveloper() || isSuperuserRole(); // top tier, eith
 // new meaning automatically — same approach as the backend functions
 // they mirror. Titles carry no capability; every one of these is now
 // a tickbox on the account, independent of what it's called.
+const canPostBanners = () => isSuperuser() || !!profile?.can_post_banners;
 const isAdminRole  = () => !!profile?.can_manage_users;
 const isWardManager = () => !!profile?.can_manage_ward_staff;
 const isDispensaryManager = () => !!profile?.can_manage_users;
@@ -98,11 +99,27 @@ const canProcess    = () => !!profile?.can_process;
 const canCheckPicking = () => isSuperuser() || !!profile?.can_check_picking;
 // Superuser/Developer can switch the second-person picking check off (System Settings).
 const pickingCheckRequired = () => systemSettings.picking_check_required !== 'false';
+// Wording used in the audit trail when the second-person check is switched off.
+const noCheckLabel = () => (systemSettings.no_check_label || 'Processed').trim() || 'Processed';
+// One sentence for the audit trail: "Processed by A on D, checked by B on D2"
+// with the check on; "<label> by A on D" with it off.
+function pickAuditLine(s, nameById) {
+  if (!s.picking_confirmed_at) return '';
+  const picker = esc(nameById[s.picking_confirmed_by] || '\u2014');
+  if (s.checked_at && s.check_waived) return `${esc(noCheckLabel())} by ${picker} on ${fmtDate(s.picking_confirmed_at)}`;
+  const base = `Processed by ${picker} on ${fmtDate(s.picking_confirmed_at)}`;
+  if (s.checked_at) return `${base}, checked by ${esc(nameById[s.checked_by] || '\u2014')} on ${fmtDate(s.checked_at)}`;
+  return `${base} \u2014 awaiting an independent check`;
+}
 const canApproveOrders = () => isSuperuser() || !!profile?.can_approve_orders;
 const canMarkNonUrgent = () => isSuperuser() || !!profile?.can_mark_nonurgent;
 const canManageStocklists = () => isSuperuser() || !!profile?.can_manage_stocklists;
 const canManageWardsSites = () => isSuperuser() || !!profile?.can_manage_wards_sites;
 const canViewBi = () => isSuperuser() || !!profile?.can_view_bi;
+const canViewDashboard = () => isSuperuser() || !!profile?.can_view_dashboard;
+// Paid features: hidden from everyone until a Developer switches them on in System settings.
+const insightsEnabled = () => systemSettings.feature_insights_enabled === 'true';
+const biEnabled = () => systemSettings.feature_bi_enabled === 'true';
 const canFreetextTempStock = () => !!profile?.can_freetext_temp_stock && canOrder();
 
 
@@ -241,6 +258,51 @@ function openModal(innerHtml, wide = false) {
 }
 function closeModal() { document.getElementById('modal-root').innerHTML = ''; }
 window.closeModal = closeModal;
+
+// Two-step confirmation for changes to stocklists. Step 1 states exactly what
+// is about to change and who it affects (one ward, several, or every ward);
+// step 2 asks for a final confirm. Nothing happens until both are pressed.
+//   scope: 'ward' (one ward, give wardName) | 'wards' (give wardCount) | 'all' (every ward, give wardCount)
+function confirmChange({ scope = 'ward', wardName = '', wardCount = 0, title, details = '', confirmLabel = 'Confirm change', onConfirm, onCancel }) {
+  const wide = scope !== 'ward';
+  const scopeText = scope === 'all'
+    ? `EVERY WARD${wardCount ? ` (${wardCount})` : ''}`
+    : scope === 'wards' ? `${wardCount} WARD${wardCount === 1 ? '' : 'S'}`
+    : `THIS WARD ONLY \u2014 ${esc(wardName || 'selected ward')}`;
+  const banner = `<div style="margin:10px 0; padding:10px 12px; border-radius:8px; font-weight:700; letter-spacing:.02em;
+      ${wide ? 'background:#fdecef; color:#9b1239; border:1px solid #f3b8c6;' : 'background:#eaf0fb; color:#13315c; border:1px solid #c5d3ee;'}">
+      This change affects: ${scopeText}</div>`;
+  const cancel = () => { closeModal(); if (onCancel) onCancel(); };
+  const step2 = () => {
+    openModal(`
+      <h3>Final confirmation</h3>
+      ${banner}
+      <p><b>${esc(title)}</b></p>
+      <p class="muted">Press <b>${esc(confirmLabel)}</b> to make this change now. Stocklist changes take effect immediately for ordering.</p>
+      <div class="actions">
+        <button class="btn ghost" id="cc-cancel2">Cancel</button>
+        <button class="btn magenta" id="cc-final">${esc(confirmLabel)}</button>
+      </div>`);
+    document.getElementById('cc-cancel2').onclick = cancel;
+    document.getElementById('cc-final').onclick = async () => {
+      const b = document.getElementById('cc-final'); if (b) { b.disabled = true; b.textContent = 'Working\u2026'; }
+      closeModal();
+      await onConfirm();
+    };
+  };
+  openModal(`
+    <h3>Are you sure?</h3>
+    ${banner}
+    <p><b>${esc(title)}</b></p>
+    ${details ? `<p class="muted">${details}</p>` : ''}
+    <div class="actions">
+      <button class="btn ghost" id="cc-cancel1">Cancel</button>
+      <button class="btn" id="cc-continue">Continue</button>
+    </div>`);
+  document.getElementById('cc-cancel1').onclick = cancel;
+  document.getElementById('cc-continue').onclick = step2;
+}
+window.confirmChange = confirmChange;
 
 function confirmDialog(title, body, confirmLabel, onConfirm, danger = false) {
   openModal(`
@@ -404,6 +466,76 @@ function applyTrustLogo() {
   });
 }
 
+// ---------- DAILY DASHBOARD (home screen, for users with the dashboard tickbox) ----------
+// Everything is "today" in London time (midnight to now). "Yet to send" are the
+// wards whose top-up is due TOMORROW and haven't submitted their top-up request today.
+let dashboardTimer = null;
+
+function dashFmtTime(iso) { return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); }
+
+function openDashboardList(kind, d) {
+  const expected = d.expected || [];
+  const sent = expected.filter(e => e.session_id);
+  const yet = expected.filter(e => !e.session_id);
+  const reqRows = (list) => list.length ? `<table><thead><tr><th>Ward</th><th>Site</th><th>Sent</th><th>Items</th><th></th></tr></thead><tbody>
+      ${list.map(r => `<tr><td><b>${esc(r.ward)}</b></td><td class="muted">${esc(r.site)}</td><td>${dashFmtTime(r.created_at)}</td><td>${r.items}</td>
+        <td style="text-align:right;"><button class="btn small ghost" data-dash-view="${r.id}">View request</button></td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">None yet today.</div>';
+  let title, sub, bodyHtml;
+  if (kind === 'yet') {
+    title = 'Wards yet to send their top-up request';
+    sub = `Top-up is due ${esc(d.tomorrow)} — these wards haven't submitted today.`;
+    const bySite = {};
+    yet.forEach(w => { (bySite[w.site] ||= []).push(w); });
+    bodyHtml = yet.length ? Object.keys(bySite).sort().map(site => `
+      <div style="margin-bottom:12px;"><div style="font-weight:700; color:var(--navy); font-size:12.5px; margin-bottom:4px;">${esc(site)}</div>
+        ${bySite[site].map(w => `<div class="proc-line" style="margin-bottom:6px;"><div class="pl-main"><div class="pl-name">${esc(w.ward)}</div><div class="pl-meta">Top-up request not yet sent</div></div><span class="badge pending">Yet to send</span></div>`).join('')}
+      </div>`).join('') : '<div class="empty">Every ward due a top-up has sent theirs.</div>';
+  } else if (kind === 'sent') {
+    title = 'Wards that have sent their top-up request';
+    sub = `Top-up is due ${esc(d.tomorrow)} — these wards have submitted today.`;
+    bodyHtml = sent.length ? `<table><thead><tr><th>Ward</th><th>Site</th><th>Sent</th><th></th></tr></thead><tbody>
+      ${sent.map(w => `<tr><td><b>${esc(w.ward)}</b></td><td class="muted">${esc(w.site)}</td><td>${dashFmtTime(w.sent_at)}</td>
+        <td style="text-align:right;"><button class="btn small ghost" data-dash-view="${w.session_id}">View request</button></td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">No ward has sent one yet.</div>';
+  } else if (kind === 'adhoc') {
+    title = 'Adhoc requests today'; sub = 'Since midnight.'; bodyHtml = reqRows(d.adhoc || []);
+  } else {
+    title = 'Top-up requests today'; sub = 'Since midnight.'; bodyHtml = reqRows(d.topup || []);
+  }
+  openModal(`<div id="proc-modal-body">
+    <div class="proc-head"><div><h3>${title}</h3><p class="ph-sub">${sub}</p></div></div>
+    <div class="proc-body">${bodyHtml}</div>
+    <div class="proc-foot"><span class="hint"></span><div class="btns"><button class="btn ghost" onclick="closeModal()">Close</button></div></div>
+  </div>`, true);
+  document.querySelectorAll('[data-dash-view]').forEach(b => b.onclick = () => openRequestSummary(b.dataset.dashView));
+}
+
+async function renderDashboardPanel(mountEl) {
+  if (!mountEl) return;
+  if (dashboardTimer) { clearInterval(dashboardTimer); dashboardTimer = null; }
+  async function refresh() {
+    const { data: d, error } = await sb.rpc('dashboard_summary');
+    if (error || !d) { mountEl.innerHTML = `<div class="card"><h2>Today</h2><div class="empty">${esc(error?.message || 'Dashboard unavailable.')}</div></div>`; return; }
+    const expected = d.expected || [];
+    const sentN = expected.filter(e => e.session_id).length;
+    const yetN = expected.length - sentN;
+    const tile = (kind, num, label, sub, cls) => `<button class="dash-tile ${cls || ''}" data-dash="${kind}">
+        <div class="dt-num">${num}</div><div class="dt-label">${label}</div><div class="dt-sub">${sub}</div></button>`;
+    mountEl.innerHTML = `<div class="card dash-card">
+      <h2>Today <span class="muted">${new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} \u00b7 since midnight \u00b7 updates automatically</span></h2>
+      <div class="dash-tiles">
+        ${tile('adhoc', (d.adhoc || []).length, 'Adhoc requests', 'Click to see them', 'navy')}
+        ${tile('topup', (d.topup || []).length, 'Full top-up requests', 'Click to see them', 'navy')}
+        ${tile('sent', sentN, 'Wards sent top-up request', `of ${expected.length} due ${esc(d.tomorrow)}`, 'teal')}
+        ${tile('yet', yetN, 'Wards yet to send', yetN ? 'Click to see which wards' : 'All sent', yetN ? 'red' : 'teal')}
+      </div></div>`;
+    mountEl.querySelectorAll('[data-dash]').forEach(b => b.onclick = () => openDashboardList(b.dataset.dash, d));
+  }
+  await refresh();
+  dashboardTimer = setInterval(refresh, 120000);
+}
+
 // ---------- REQUEST SUMMARY (click-through for any adhoc / top-up request) ----------
 // Shows every drug on a request: what was asked for, what was actually sent,
 // and what happened to it (sent in full, alternative, part supplied, out of
@@ -471,11 +603,7 @@ function requestSummaryBodyHtml(all, nameById = {}) {
 
 // Who picked / checked, as a sentence for the top of the summary.
 function requestPickLine(s, nameById) {
-  const bits = [];
-  if (s.picking_confirmed_at) bits.push(`Picked by ${esc(nameById[s.picking_confirmed_by] || '—')} on ${fmtDate(s.picking_confirmed_at)}`);
-  if (s.checked_at) bits.push(s.check_waived ? 'second-person check not required at the time' : `checked by ${esc(nameById[s.checked_by] || '—')} on ${fmtDate(s.checked_at)}`);
-  else if (s.picking_confirmed_at) bits.push('awaiting an independent check');
-  return bits.join(' — ');
+  return pickAuditLine(s, nameById);
 }
 
 async function openRequestSummary(sessionId) {
@@ -572,6 +700,7 @@ async function requireAuth(options = {}) {
     ? myWards.map(w => w.name).join(', ')
     : (isSuperuser() ? 'Full system access' : isAdminRole() ? 'Admin' : isGovernance() ? 'Governance — read only' : ''));
   wireLogout();
+  buildSideNav();
   loadBanner();
   startNewOrderPolling();
   startSessionHeartbeat();
@@ -629,22 +758,34 @@ function startSessionHeartbeat() {
   sessionHeartbeatTimer = setInterval(tick, 60000);
 }
 
+// ---------- BANNERS (ported from the Pharmacy Portal) ----------
+function todayUK() { return new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/London' }); }
+function bannerState(b) {
+  const t = todayUK();
+  if (!b.active) return 'Hidden';
+  if (b.starts_on && b.starts_on > t) return 'Scheduled';
+  if (b.ends_on && b.ends_on < t) return 'Expired';
+  return 'Live';
+}
+function bnLinkify(escaped) {
+  return escaped.replace(/\bhttps?:\/\/[^\s<]+/g, (u) => {
+    const trail = (u.match(/[.,;:!?)]+$/) || [''])[0];
+    const clean = trail ? u.slice(0, -trail.length) : u;
+    return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${trail}`;
+  });
+}
+const BN_ICON = { info: '\u2139\ufe0f', success: '\u2705', warning: '\u26a0\ufe0f', urgent: '\ud83d\udea8' };
+function bannerHtml(b) {
+  const sev = ['info', 'success', 'warning', 'urgent'].includes(b.severity) ? b.severity : 'info';
+  return `<div class="hbanner ${sev}" role="status"><span class="ic" aria-hidden="true">${BN_ICON[sev]}</span><div class="tx">${bnLinkify(esc(b.message))}</div></div>`;
+}
 async function loadBanner() {
   const root = document.getElementById('banner-root');
   if (!root) return;
-  const { data } = await sb.from('notifications').select('*').eq('active', true).order('created_at', { ascending: false }).limit(1);
-  const note = data && data[0];
-  if (!note) { root.innerHTML = ''; return; }
-  root.innerHTML = `<div class="banner">
-    <div class="msg">⚠️ ${esc(note.message)}</div>
-    ${isSuperuser() ? `<button id="banner-clear">Clear</button>` : ''}
-  </div>`;
-  if (isSuperuser()) {
-    document.getElementById('banner-clear').onclick = async () => {
-      await sb.from('notifications').update({ active: false }).eq('id', note.id);
-      loadBanner();
-    };
-  }
+  const { data, error } = await sb.from('home_banners').select('*').order('created_at', { ascending: false });
+  if (error || !data) { root.innerHTML = ''; return; }
+  const live = data.filter(b => bannerState(b) === 'Live');
+  root.innerHTML = live.length ? `<div class="hbanner-stack">${live.map(bannerHtml).join('')}</div>` : '';
 }
 
 function startNewOrderPolling() {
@@ -693,13 +834,12 @@ function buildNavLinks() {
     if (isDeveloper()) links.push({ href: 'titles.html', label: 'Titles', group: 'Admin' });
     links.push({ href: 'drug-catalog.html', label: 'Drug Catalog', group: 'Admin' });
     links.push({ href: 'stocklists.html', label: 'Stocklists', group: 'Admin' });
-    links.push({ href: 'notifications.html', label: 'Notifications', group: 'Admin' });
     links.push({ href: 'active-sessions.html', label: 'Active sessions', group: 'Admin' });
     links.push({ href: 'bank-holidays.html', label: 'Bank holidays', group: 'Admin' });
     links.push({ href: 'system-settings.html', label: 'System settings', group: 'Admin' });
     links.push({ href: 'logs.html', label: 'Logs', group: 'Admin' });
     links.push({ href: 'audit.html', label: 'Audit', group: 'Governance' });
-    links.push({ href: 'insights.html', label: 'Insights', group: 'Insights' });
+    if (insightsEnabled()) links.push({ href: 'insights.html', label: 'Insights', group: 'Insights' });
   } else {
     // Below the two fixed top tiers, every one of these is its own
     // tickbox — an account can hold any combination, so each link is
@@ -712,8 +852,9 @@ function buildNavLinks() {
     if (canManageStocklists()) links.push({ href: 'stocklists.html', label: 'Stocklists', group: 'Admin' });
     if (isAdminRole()) links.push({ href: 'topup-days.html', label: 'Top-up days', group: 'Admin' });
   }
-  if (canViewBi()) links.push({ href: 'bi-insights.html', label: 'BI Insights', group: 'Insights' });
+  if (canViewBi() && biEnabled()) links.push({ href: 'bi-insights.html', label: 'BI Insights', group: 'Insights' });
   if (isGovernance()) links.push({ href: 'audit.html', label: 'Audit', group: 'Governance' });
+  if (canPostBanners()) links.push({ href: 'notifications.html', label: 'Banners', group: isSuperuser() ? 'Admin' : 'Banners' });
   return links;
 }
 
@@ -740,7 +881,7 @@ const PAGE_META = {
   'titles.html': ['\ud83c\udff7\ufe0f', 'Titles', 'Job titles used as labels on accounts \u2014 permissions come from the tickboxes.'],
   'drug-catalog.html': ['\ud83d\udc8a', 'Drug catalog', 'Every orderable medicine, its pack size and alternatives.'],
   'stocklists.html': ['\ud83d\udccb', 'Stocklists', 'Per-ward min/max stock levels. Add or remove a drug across every ward.'],
-  'notifications.html': ['\ud83d\udd14', 'Notifications', 'Who is told what, and when.'],
+  'notifications.html': ['\ud83d\udce2', 'Banners', 'Post notices that everyone sees at the top of every page.'],
   'active-sessions.html': ['\ud83d\udfe2', 'Active sessions', 'Who is signed in right now.'],
   'bank-holidays.html': ['\ud83d\udcc5', 'Bank holidays', 'Dates that change top-up and turnaround timing.'],
   'system-settings.html': ['\u2699\ufe0f', 'System settings', 'Logos, order rules, checks and other system-wide switches.'],
@@ -751,6 +892,122 @@ const PAGE_META = {
   'processed-history.html': ['\ud83d\udd52', 'Processed (48h)', 'Requests processed in the last 48 hours.'],
 };
 
+
+// ---------- SLIDE-OUT SIDE MENU (the "side tab") ----------
+// A navy menu that slides in from the left. It opens when the pointer rests on the
+// left edge of the window (or on the small tab there), stays open while the pointer is
+// over it and closes shortly after the pointer leaves. The menu button in the top bar
+// (or the tab, or a tap on touch screens) PINS it open; Escape or a click elsewhere
+// closes it. It is built from buildNavLinks(), so each person only sees what they can use.
+function buildSideNav() {
+  ['sideNav', 'sideEdge', 'sideHandle', 'sideScrim'].forEach(id => document.getElementById(id)?.remove());
+  const header = document.querySelector('header.topbar');
+  if (!header || !profile) return;
+  const currentHref = document.body.getAttribute('data-page') || '';
+  const links = buildNavLinks();
+  const tiles = buildAreaTiles();
+  const iconFor = Object.fromEntries(tiles.map(t => [t.group, t.icon.replace(/width="40" height="40"/, 'width="18" height="18"')]));
+  const labelFor = Object.fromEntries(tiles.map(t => [t.group, t.label]));
+  const groups = [...new Set(links.map(l => l.group))];
+  const homeIcon = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>';
+
+  const nav = document.createElement('nav');
+  nav.id = 'sideNav'; nav.className = 'side-nav'; nav.setAttribute('aria-label', 'Main navigation');
+  nav.innerHTML =
+    `<div class="sn-brand">Stock Req<small>by ED&amp;G™</small></div>` +
+    `<a href="home.html" class="sn-home"${currentHref === 'home.html' ? ' aria-current="page"' : ''}>${homeIcon}<span>Home</span></a>` +
+    groups.map(g => `<hr><div class="sn-group">${iconFor[g] || ''}<span>${esc(labelFor[g] || g)}</span></div>` +
+      links.filter(l => l.group === g).map(l => `<a class="sn-sub" href="${l.href}"${l.href === currentHref ? ' aria-current="page"' : ''}><span>${esc(l.label)}</span></a>`).join('')).join('');
+
+  const edge = document.createElement('div'); edge.id = 'sideEdge'; edge.className = 'side-edge'; edge.setAttribute('aria-hidden', 'true');
+  const handle = document.createElement('button'); handle.id = 'sideHandle'; handle.type = 'button'; handle.className = 'side-handle';
+  handle.setAttribute('aria-label', 'Open menu'); handle.tabIndex = -1;
+  handle.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+  const scrim = document.createElement('div'); scrim.id = 'sideScrim'; scrim.className = 'side-scrim';
+  document.body.append(scrim, edge, handle, nav);
+
+  // Top bar: menu button + home button to the left of the brand.
+  if (!header.querySelector('.tb-left')) {
+    const brand = header.querySelector('.brand');
+    const left = document.createElement('div'); left.className = 'tb-left';
+    const tog = document.createElement('button');
+    tog.type = 'button'; tog.id = 'navToggle'; tog.className = 'nav-toggle';
+    tog.setAttribute('aria-label', 'Open menu'); tog.setAttribute('aria-expanded', 'false'); tog.setAttribute('aria-controls', 'sideNav');
+    tog.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>';
+    const home = document.createElement('a');
+    home.href = 'home.html'; home.className = 'home-btn'; home.title = 'Home'; home.setAttribute('aria-label', 'Home');
+    if (currentHref === 'home.html') home.setAttribute('aria-current', 'page');
+    home.innerHTML = homeIcon.replace('width="18" height="18"', 'width="20" height="20"');
+    if (brand) { brand.before(left); left.append(tog, home, brand); } else { header.prepend(left); left.append(tog, home); }
+  }
+  const tog = document.getElementById('navToggle');
+
+  let openT = null, closeT = null, pinned = false;
+  const modalOpen = () => !!document.querySelector('#modal-root .modal-bg');
+  const setOpen = (v) => {
+    nav.classList.toggle('open', v);
+    handle.classList.toggle('gone', v);
+    scrim.classList.toggle('show', v && pinned);
+    tog.setAttribute('aria-expanded', String(v));
+  };
+  const canHover = window.matchMedia && window.matchMedia('(hover: hover)').matches;
+
+  if (canHover) {
+    // Hot zone: the left 40px of the window. Tracked on the document so the page underneath stays clickable.
+    document.addEventListener('mousemove', (e) => {
+      if (e.clientX <= 40 && !nav.classList.contains('open') && !modalOpen()) {
+        if (!openT) { clearTimeout(closeT); closeT = null; openT = setTimeout(() => { openT = null; setOpen(true); }, 35); }
+      } else if (openT) { clearTimeout(openT); openT = null; }
+    });
+    // Close shortly after the pointer leaves the menu (unless it has been pinned open).
+    document.addEventListener('mousemove', (e) => {
+      if (pinned || !nav.classList.contains('open')) return;
+      if (e.clientX <= nav.offsetWidth + 8) { clearTimeout(closeT); closeT = null; }
+      else if (!closeT) closeT = setTimeout(() => { closeT = null; setOpen(false); }, 350);
+    });
+  }
+  const toggle = (e) => { e.stopPropagation(); pinned = !nav.classList.contains('open'); setOpen(pinned); };
+  tog.addEventListener('click', toggle);
+  handle.addEventListener('click', toggle);
+  scrim.addEventListener('click', () => { pinned = false; setOpen(false); });
+  document.addEventListener('click', (e) => { if (pinned && !nav.contains(e.target)) { pinned = false; setOpen(false); } });
+  nav.addEventListener('focusin', () => setOpen(true));
+  nav.addEventListener('focusout', (e) => { if (!pinned && !nav.contains(e.relatedTarget)) setOpen(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && nav.classList.contains('open')) { pinned = false; setOpen(false); tog.focus(); } });
+}
+
+// ---------- SUB-TABS for long admin pages ----------
+// Sorts the page's top-level cards into tabs by their <h2> heading (a card with no
+// heading stays with the card before it). Empty tabs are dropped; the chosen tab is
+// kept in the URL hash so a reload or a re-render stays on it.
+function applySubtabs(root, tabs, defaultId) {
+  const cards = [...root.children].filter(c => c.classList.contains('card'));
+  const tabOf = [];
+  cards.forEach((c, i) => {
+    const h = (c.querySelector('h2')?.textContent || '').trim().toLowerCase();
+    let t = h ? tabs.find(x => x.heads.some(k => h.startsWith(k.toLowerCase()))) : null;
+    if (!t) t = h ? tabs[0] : (tabOf[i - 1] || tabs[0]);
+    tabOf[i] = t;
+  });
+  const used = tabs.filter(t => tabOf.includes(t));
+  if (used.length < 2) return;
+  const fromHash = decodeURIComponent((location.hash.match(/tab=([^&]+)/) || [])[1] || '');
+  let active = used.find(t => t.id === fromHash) || used.find(t => t.id === defaultId) || used[0];
+  const strip = document.createElement('div'); strip.className = 'subtabs-wrap';
+  strip.innerHTML = '<nav class="seg subtabs" role="tablist">' + used.map(t => `<button type="button" role="tab" data-st="${t.id}">${esc(t.label)}</button>`).join('') + '</nav>';
+  root.insertBefore(strip, cards[0]);
+  const paint = () => {
+    cards.forEach((c, i) => c.classList.toggle('st-off', tabOf[i] !== active));
+    strip.querySelectorAll('button').forEach(b => { const on = b.dataset.st === active.id; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); });
+  };
+  strip.querySelectorAll('button').forEach(b => b.onclick = () => {
+    active = used.find(t => t.id === b.dataset.st);
+    try { history.replaceState(null, '', '#tab=' + encodeURIComponent(active.id)); } catch (e) {}
+    paint();
+  });
+  paint();
+}
+
 function renderPageNav(currentHref) {
   const el = document.getElementById('page-nav');
   if (!el) return;
@@ -759,9 +1016,7 @@ function renderPageNav(currentHref) {
   const group = current ? links.filter(l => l.group === current.group) : [];
   if (current && current.group === 'Admin') document.body.setAttribute('data-admin', '1');
   const meta = PAGE_META[currentHref];
-  el.innerHTML = `<div class="nav-row"><a href="home.html" class="nav-home">\u2190 Home</a>` +
-    (group.length > 1 ? `<nav class="seg">${group.map(l => `<a href="${l.href}" class="${l.href === currentHref ? 'on' : ''}">${esc(l.label)}</a>`).join('')}</nav>` : '') +
-    `</div>` +
+  el.innerHTML = (group.length > 1 ? `<div class="nav-row"><nav class="seg">${group.map(l => `<a href="${l.href}" class="${l.href === currentHref ? 'on' : ''}">${esc(l.label)}</a>`).join('')}</nav></div>` : '') +
     (meta ? `<div class="page-head"><div class="ph-icon">${meta[0]}</div><div><h1>${esc(meta[1])}</h1><p>${esc(meta[2])}</p></div></div>` : '');
 }
 

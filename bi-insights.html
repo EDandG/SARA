@@ -181,7 +181,7 @@ async function loadSeasonalPattern(wardId, drugName) {
 }
 
 (async () => {
-  const p = await requireAuth({ require: () => canViewBi() });
+  const p = await requireAuth({ require: () => canViewBi() && biEnabled() });
   if (!p) return;
   document.getElementById("main").innerHTML = "<div id='body'></div>";
   renderBiInsights();

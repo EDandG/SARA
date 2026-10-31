@@ -56,6 +56,10 @@
 async function renderLogs() {
   const body = document.getElementById('body');
   const { count } = await sb.from('orders').select('*', { count: 'exact', head: true });
+  const { count: loginCount } = await sb.from('login_events').select('*', { count: 'exact', head: true });
+  const { count: histCount } = await sb.from('blist_item_history').select('*', { count: 'exact', head: true });
+  const { data: stRows } = await sb.from('system_settings').select('key, value').in('key', ['orders_cleared', 'audit_log_cleared']);
+  (stRows || []).forEach(r => { systemSettings[r.key] = r.value; });
   body.innerHTML = `
     <div class="card">
       <h2>Export logs</h2>
@@ -68,9 +72,17 @@ async function renderLogs() {
       <button class="btn magenta" id="export-logs-btn" style="margin-top:14px;">Download logs (Excel)</button>
     </div>
     <div class="card">
-      <h2>Clear all order logs</h2>
-      <p class="muted">Permanently deletes every order and every submission session across the whole system (${count ?? 0} order record${count === 1 ? '' : 's'} currently). This cannot be undone \u2014 export first if you need a record.</p>
-      <button class="btn danger" id="clear-logs-btn">Clear all order logs</button>
+      <h2>Clear all orders</h2>
+      <p class="muted">Permanently deletes every order and every submission session across the whole system (${count ?? 0} order record${count === 1 ? '' : 's'} currently). Users, wards, sites and stocklists are not touched. This cannot be undone \u2014 download the export above first if you need a record.</p>
+      ${systemSettings.orders_cleared ? `<p class="muted" style="font-size:12px;">Last cleared: ${esc(systemSettings.orders_cleared)}</p>` : ''}
+      <button class="btn danger" id="clear-logs-btn">Clear all orders\u2026</button>
+    </div>
+    <div class="card">
+      <h2>Clear audit log</h2>
+      <p class="muted">Permanently deletes the login / logout history (${loginCount ?? 0} event${loginCount === 1 ? '' : 's'}) and the stocklist change history (${histCount ?? 0} change${histCount === 1 ? '' : 's'}). Orders, users and current stocklists are not touched, and nobody is signed out.</p>
+      ${systemSettings.audit_log_cleared ? `<p class="muted" style="font-size:12px;">Last cleared: ${esc(systemSettings.audit_log_cleared)}</p>` : ''}
+      <button class="btn ghost" id="export-audit-btn">Download audit log (Excel)</button>
+      <button class="btn danger" id="clear-audit-btn">Clear audit log\u2026</button>
     </div>`;
 
   document.getElementById('export-logs-btn').onclick = async () => {
@@ -86,28 +98,51 @@ async function renderLogs() {
     exportRowsToExcel(rows, `stock-req-${filenamePart}-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  document.getElementById('clear-logs-btn').onclick = () => {
-    openModal(`<h3>Clear all order logs</h3>
-      <p>This permanently deletes every order and submission session, for every site and ward. This cannot be undone.</p>
-      <label>Re-enter your password to confirm</label>
-      <input type="password" id="clear-logs-pw" autocomplete="current-password" />
-      <div class="modal-error" id="clear-logs-pw-error"></div>
-      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn danger" id="clear-logs-confirm">Clear everything</button></div>`);
-    document.getElementById('clear-logs-confirm').onclick = async () => {
-      const pw = document.getElementById('clear-logs-pw').value;
-      const errEl = document.getElementById('clear-logs-pw-error');
+  // Shared "are you really sure" step: type the word, re-enter the password, then call the RPC.
+  function confirmWipe({ title, text, word, rpc, done }) {
+    openModal(`<h3>${esc(title)}</h3>
+      <p>${text}</p>
+      <label>Type <b>${esc(word)}</b> to confirm</label>
+      <input type="text" id="wipe-word" autocomplete="off" />
+      <label style="margin-top:8px;">Re-enter your password</label>
+      <input type="password" id="wipe-pw" autocomplete="current-password" />
+      <div class="modal-error" id="wipe-error"></div>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn danger" id="wipe-confirm">${esc(title)}</button></div>`);
+    document.getElementById('wipe-confirm').onclick = async () => {
+      const errEl = document.getElementById('wipe-error');
+      if (document.getElementById('wipe-word').value.trim() !== word) { errEl.textContent = `Type ${word} exactly to continue.`; return; }
+      const pw = document.getElementById('wipe-pw').value;
       if (!pw) { errEl.textContent = 'Enter your password.'; return; }
+      const btn = document.getElementById('wipe-confirm'); btn.disabled = true;
       const { data: { session } } = await sb.auth.getSession();
       const { error: authErr } = await sb.auth.signInWithPassword({ email: session.user.email, password: pw });
-      if (authErr) { errEl.textContent = 'Incorrect password.'; return; }
-      const { error: e1 } = await sb.from('orders').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-      if (e1) { errEl.textContent = e1.message; return; }
-      const { error: e2 } = await sb.from('order_sessions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-      if (e2) { errEl.textContent = e2.message; return; }
+      if (authErr) { errEl.textContent = 'Incorrect password.'; btn.disabled = false; return; }
+      const { data: n, error } = await sb.rpc(rpc);
+      if (error) { errEl.textContent = error.message; btn.disabled = false; return; }
       closeModal();
-      toast('All order logs cleared.');
+      toast(`${done} (${n ?? 0} record${n === 1 ? '' : 's'} removed).`);
       renderLogs();
     };
+  }
+  document.getElementById('clear-logs-btn').onclick = () => confirmWipe({
+    title: 'Clear all orders', word: 'CLEAR ORDERS', rpc: 'clear_all_orders', done: 'All orders cleared',
+    text: 'This permanently deletes <b>every order and submission session</b> for every site and ward. It cannot be undone.' });
+  document.getElementById('clear-audit-btn').onclick = () => confirmWipe({
+    title: 'Clear audit log', word: 'CLEAR AUDIT', rpc: 'clear_audit_log', done: 'Audit log cleared',
+    text: 'This permanently deletes the <b>login / logout history and the stocklist change history</b>. It cannot be undone.' });
+  document.getElementById('export-audit-btn').onclick = async () => {
+    const [{ data: ev }, { data: hist }, { data: ppl }] = await Promise.all([
+      sb.from('login_events').select('*').order('created_at', { ascending: false }),
+      sb.from('blist_item_history').select('*').order('changed_at', { ascending: false }),
+      sb.from('profiles').select('id, full_name'),
+    ]);
+    const nm = Object.fromEntries((ppl || []).map(p => [p.id, p.full_name]));
+    const rows = [
+      ...(ev || []).map(e => ({ when: e.created_at, kind: 'Login event', who: nm[e.user_id] || '', detail: e.event_type, ward: '' })),
+      ...(hist || []).map(h => ({ when: h.changed_at, kind: 'Stocklist change', who: nm[h.changed_by] || '', detail: `${h.change_type}: ${h.medicine_name} ${h.old_value ?? ''} \u2192 ${h.new_value ?? ''}`, ward: wardName(h.ward_id) })),
+    ].sort((x, y) => String(y.when).localeCompare(String(x.when)));
+    if (!rows.length) return toast('Nothing to export.', true);
+    exportRowsToExcel(rows, `stock-req-audit-log-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 }
 

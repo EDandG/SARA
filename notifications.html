@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Notifications</title>
+<title>Stock Req — Banners</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -35,52 +35,105 @@
 <script src="vendor/supabase.js"></script>
 <script src="shared.js"></script>
 <script>
+let bnEdit = null, bnRows = [], bnNames = {};
 async function renderNotifications() {
-  const body = document.getElementById("body");
+  const body = document.getElementById('body');
   body.innerHTML = `
     <div class="card">
-      <h2>Post a banner</h2>
-      <p class="muted">Shown to every logged-in user across the system. Use only for business-continuity incidents (system outages, urgent operational messages) — not routine communication.</p>
-      <label>Message</label>
-      <input type="text" id="notif-message" placeholder="e.g. Pharmacy ordering system will be down for maintenance 2–3pm today" />
-      <button class="btn magenta" style="margin-top:14px;" id="post-notif-btn">Post banner</button>
+      <h2 id="bn-form-title">New banner</h2>
+      <p class="muted">Shown at the top of every page for everyone signed in, while it is live. Use it for outages, urgent operational messages or useful notices. Links starting https:// become clickable.</p>
+      <div class="row">
+        <div style="flex:3 1 320px;"><label>Message <span class="muted" id="bn-count" style="font-weight:400;">0 / 500</span></label>
+          <textarea id="bn-text" rows="3" maxlength="500" style="width:100%;" placeholder="e.g. Ordering will be down for maintenance 2\u20133pm today"></textarea></div>
+        <div><label>Style</label><select id="bn-sev"><option value="info">Information (blue)</option><option value="success">Good news (green)</option><option value="warning">Warning (amber)</option><option value="urgent">Urgent (red)</option></select></div>
+        <div><label>Show from <span class="muted" style="font-weight:400;">(optional)</span></label><input type="date" id="bn-start" /></div>
+        <div><label>Show until <span class="muted" style="font-weight:400;">(optional)</span></label><input type="date" id="bn-end" /></div>
+      </div>
+      <label style="display:flex; align-items:center; gap:6px; font-weight:400; margin-top:8px;"><input type="checkbox" id="bn-active" style="width:auto;" checked> Visible (untick to save it hidden)</label>
+      <div id="bn-preview" style="margin-top:10px;"></div>
+      <div style="margin-top:12px; display:flex; gap:8px;"><button class="btn magenta" id="bn-save">Add banner</button><button class="btn ghost hidden" id="bn-cancel">Cancel edit</button></div>
     </div>
-    <div class="card"><h2>History</h2><div id="notif-history">Loading…</div></div>`;
-
-  document.getElementById("post-notif-btn").onclick = async () => {
-    const message = document.getElementById("notif-message").value.trim();
-    if (!message) return toast("Enter a message.", true);
-    await sb.from("notifications").update({ active: false }).eq("active", true);
-    const { error } = await sb.from("notifications").insert({ message, created_by: profile.id, active: true });
-    if (error) return toast(error.message, true);
-    toast("Banner posted.");
-    document.getElementById("notif-message").value = "";
-    loadBanner();
-    renderNotifications();
+    <div class="card"><h2>All banners</h2><div id="bn-list">Loading\u2026</div></div>`;
+  const sev = () => document.getElementById('bn-sev').value;
+  const text = () => document.getElementById('bn-text').value;
+  const preview = () => {
+    document.getElementById('bn-count').textContent = `${text().length} / 500`;
+    document.getElementById('bn-preview').innerHTML = text().trim() ? `<div class="muted" style="font-size:12px; margin-bottom:4px;">Preview</div>${bannerHtml({ message: text(), severity: sev() })}` : '';
   };
-
-  const { data, error } = await sb.from("notifications").select("*").order("created_at", { ascending: false }).limit(50);
-  const el = document.getElementById("notif-history");
-  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
-  if (!data?.length) { el.innerHTML = `<div class="empty">No banners posted yet.</div>`; return; }
-  el.innerHTML = `<table><thead><tr><th>Message</th><th>Posted</th><th>Status</th><th></th></tr></thead><tbody>
-    ${data.map(n => `<tr>
-      <td>${esc(n.message)}</td><td class="muted">${fmtDate(n.created_at)}</td>
-      <td><span class="badge ${n.active ? "pending" : "complete"}">${n.active ? "Live" : "Cleared"}</span></td>
-      <td style="text-align:right;">${n.active ? `<button class="btn small danger" data-clear="${n.id}">Clear</button>` : ""}</td>
-    </tr>`).join("")}
-  </tbody></table>`;
-  el.querySelectorAll("[data-clear]").forEach(b => b.onclick = async () => {
-    await sb.from("notifications").update({ active: false }).eq("id", b.dataset.clear);
-    loadBanner();
-    renderNotifications();
-  });
+  document.getElementById('bn-text').oninput = preview;
+  document.getElementById('bn-sev').onchange = preview;
+  const reset = () => {
+    bnEdit = null;
+    document.getElementById('bn-text').value = ''; document.getElementById('bn-sev').value = 'info';
+    document.getElementById('bn-start').value = ''; document.getElementById('bn-end').value = ''; document.getElementById('bn-active').checked = true;
+    document.getElementById('bn-form-title').textContent = 'New banner';
+    document.getElementById('bn-save').textContent = 'Add banner';
+    document.getElementById('bn-cancel').classList.add('hidden'); preview();
+  };
+  document.getElementById('bn-cancel').onclick = reset;
+  async function save(id, message, severity, start, end, active) {
+    const { error } = await sb.rpc('save_home_banner', { p_id: id, p_message: message, p_severity: severity, p_starts_on: start || null, p_ends_on: end || null, p_active: active });
+    if (error) throw error;
+    await loadList(); loadBanner();
+  }
+  document.getElementById('bn-save').onclick = async () => {
+    const t = text().trim(), st = document.getElementById('bn-start').value, en = document.getElementById('bn-end').value;
+    if (!t) return toast('Write the banner text first.', true);
+    if (st && en && en < st) return toast('The end date must be on or after the start date.', true);
+    try { await save(bnEdit, t, sev(), st, en, document.getElementById('bn-active').checked); toast(bnEdit ? 'Banner updated.' : 'Banner added.'); reset(); }
+    catch (e) { toast(e.message, true); }
+  };
+  const who = (id) => id ? (bnNames[id] || 'a removed account') : 'an unknown user';
+  async function loadList() {
+    const el = document.getElementById('bn-list');
+    const { data, error } = await sb.from('home_banners').select('*').order('created_at', { ascending: false });
+    if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+    bnRows = data || [];
+    if (!bnRows.length) { el.innerHTML = '<div class="empty">No banners yet.</div>'; return; }
+    el.innerHTML = bnRows.map(b => {
+      const st = bannerState(b);
+      const dates = (b.starts_on || b.ends_on) ? ` \u00b7 ${b.starts_on ? 'from ' + fmtDate(b.starts_on) : ''}${b.starts_on && b.ends_on ? ' ' : ''}${b.ends_on ? 'until ' + fmtDate(b.ends_on) : ''}` : '';
+      const edited = b.updated_at !== b.created_at && (b.updated_by !== b.created_by || Math.abs(new Date(b.updated_at) - new Date(b.created_at)) > 1000);
+      return `<div class="bn-row" data-id="${b.id}">
+        <div class="msg"><span class="bn-pill ${st === 'Live' ? 'live' : ''}">${st}</span>${esc(b.message)}
+          <div class="muted" style="font-size:12px;">${esc(b.severity)}${dates}</div>
+          <div class="muted" style="font-size:12px;">Posted by <b>${esc(who(b.created_by))}</b> on ${esc(fmtDate(b.created_at))}${edited ? ` \u00b7 last edited by <b>${esc(who(b.updated_by))}</b> on ${esc(fmtDate(b.updated_at))}` : ''}</div></div>
+        <div style="display:flex; gap:6px;"><button class="btn small ghost" data-bn="toggle">${b.active ? 'Hide' : 'Show'}</button><button class="btn small ghost" data-bn="edit">Edit</button><button class="btn small danger" data-bn="delete">Delete</button></div>
+      </div>`;
+    }).join('');
+    el.querySelectorAll('[data-bn]').forEach(btn => btn.onclick = async () => {
+      const id = btn.closest('.bn-row').dataset.id; const b = bnRows.find(x => x.id === id); if (!b) return;
+      try {
+        if (btn.dataset.bn === 'edit') {
+          bnEdit = id;
+          document.getElementById('bn-text').value = b.message; document.getElementById('bn-sev').value = b.severity;
+          document.getElementById('bn-start').value = b.starts_on || ''; document.getElementById('bn-end').value = b.ends_on || '';
+          document.getElementById('bn-active').checked = b.active;
+          document.getElementById('bn-form-title').textContent = 'Edit banner';
+          document.getElementById('bn-save').textContent = 'Save changes';
+          document.getElementById('bn-cancel').classList.remove('hidden'); preview();
+          window.scrollTo({ top: 0, behavior: 'smooth' }); document.getElementById('bn-text').focus();
+        } else if (btn.dataset.bn === 'toggle') {
+          await save(id, b.message, b.severity, b.starts_on, b.ends_on, !b.active);
+        } else {
+          confirmDialog('Delete banner', 'Delete this banner? It will disappear for everyone.', 'Delete', async () => {
+            const { error } = await sb.rpc('delete_home_banner', { p_id: id });
+            if (error) return toast(error.message, true);
+            await loadList(); loadBanner();
+          });
+        }
+      } catch (e) { toast(e.message, true); }
+    });
+  }
+  const { data: names } = await sb.rpc('staff_display_names');
+  bnNames = Object.fromEntries((names || []).map(n => [n.id, n.full_name]));
+  await loadList(); preview();
 }
 
 (async () => {
-  const p = await requireAuth({ require: (pr) => ['developer', 'superuser'].includes(pr.role) });
+  const p = await requireAuth({ require: () => canPostBanners() });
   if (!p) return;
-  document.getElementById("main").innerHTML = "<div id='body'></div>";
+  document.getElementById('main').innerHTML = "<div id='body'></div>";
   renderNotifications();
 })();
 </script>

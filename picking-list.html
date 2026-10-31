@@ -32,6 +32,7 @@
 <div id="modal-root"></div>
 <div id="toast-root"></div>
 
+<script src="vendor/jspdf.umd.min.js"></script>
 <script src="vendor/supabase.js"></script>
 <script src="shared.js"></script>
 <style>
@@ -70,8 +71,8 @@ async function renderPickingList() {
 
   body.innerHTML = `
     <div class="card no-print">
-      <p class="muted" style="margin-top:0;">This opens your browser's print dialog automatically. If it doesn't, use the button below.</p>
-      <button class="btn magenta" id="print-btn">Print</button>
+      <p class="muted" style="margin-top:0;" id="pl-note">Preparing your PDF\u2026 it downloads automatically. If it doesn't, use the button below.</p>
+      <button class="btn magenta" id="print-btn">Download PDF</button>
     </div>
     <div class="picking-sheet">
       <h1>Picking list</h1>
@@ -102,12 +103,85 @@ async function renderPickingList() {
       </div>
     </div>`;
 
-  document.getElementById('print-btn').onclick = () => window.print();
+  const download = () => downloadPickingPdf(s, lines || []);
+  document.getElementById('print-btn').onclick = download;
 
-  // Record the print once, best-effort — doesn't block showing the sheet.
+  // Record the download once, best-effort — doesn't block showing the sheet.
   sb.rpc('mark_picking_list_printed', { target_session: sessionId });
 
-  setTimeout(() => window.print(), 400);
+  setTimeout(() => {
+    try {
+      download();
+      document.getElementById('pl-note').textContent = 'PDF downloaded. You can close this tab, or download it again below.';
+      if (window.opener) setTimeout(() => window.close(), 1200);
+    } catch (e) {
+      document.getElementById('pl-note').textContent = 'Could not create the PDF: ' + e.message;
+    }
+  }, 300);
+}
+
+// Builds the picking list as a real PDF and downloads it \u2014 no print dialog.
+function downloadPickingPdf(s, lines) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const M = 40, navy = [19, 38, 74], dim = [110, 118, 135];
+  // jsPDF's built-in font covers Latin-1 only \u2014 swap common typographic characters.
+  const clean = (t) => String(t ?? '').replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/[\u2013\u2014]/g, '-').replace(/\u00b7/g, '-').replace(/[^\x20-\x7e\u00a0-\u00ff]/g, '');
+  const colQty = M + 300, colTf = M + 345, colPart = M + 405, colOos = M + 470;
+  let y = M, page = 1;
+
+  const header = () => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(18); doc.setTextColor(...navy);
+    doc.text('Picking list', M, y + 14); y += 28;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(...dim);
+    const meta = [
+      `${clean(wardName(s.ward_id))}  |  ${s.order_type === 'topup' ? 'Top-up' : 'Adhoc'} request`,
+      `Submitted ${clean(fmtDate(s.created_at))}  |  Picked by: ${clean(profile.full_name)}  |  Downloaded: ${clean(fmtDate(new Date().toISOString()))}`,
+    ];
+    meta.forEach((m) => { doc.text(m, M, y + 10); y += 14; });
+    y += 8;
+  };
+  const tableHead = () => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(...dim);
+    doc.text('MEDICINE', M, y + 8); doc.text('QTY', colQty, y + 8);
+    doc.text('TO FOLLOW', colTf - 6, y + 8); doc.text('PART ORDER', colPart - 6, y + 8); doc.text('OUT OF STOCK', colOos - 8, y + 8);
+    y += 14; doc.setDrawColor(...navy); doc.setLineWidth(1.2); doc.line(M, y, W - M, y); y += 4;
+  };
+  const footer = () => {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(...dim);
+    doc.text(`Stock Req - Page ${page}`, W - M, H - 20, { align: 'right' });
+  };
+
+  header(); tableHead();
+  doc.setFontSize(10.5);
+  lines.forEach((o) => {
+    doc.setFont('helvetica', 'normal'); doc.setTextColor(30, 35, 50);
+    const label = clean(o.medicine_name + (o.pack_size ? ` (${o.pack_size})` : ''));
+    const wrapped = doc.splitTextToSize(label, 285);
+    const rowH = Math.max(24, wrapped.length * 13 + 10);
+    if (y + rowH > H - 60) { footer(); doc.addPage(); page++; y = M; tableHead(); doc.setFontSize(10.5); }
+    doc.text(wrapped, M, y + 15);
+    doc.text(String(o.quantity), colQty, y + 15);
+    doc.setDrawColor(...dim); doc.setLineWidth(0.8);
+    [colTf + 4, colPart + 8, colOos + 12].forEach((x) => doc.rect(x, y + 5, 13, 13));
+    y += rowH; doc.setDrawColor(225, 228, 235); doc.setLineWidth(0.5); doc.line(M, y, W - M, y);
+  });
+
+  // sign-off block (keep together on one page)
+  if (y + 150 > H - 40) { footer(); doc.addPage(); page++; y = M; }
+  y += 34;
+  const field = (x, w, label) => {
+    doc.setDrawColor(30, 35, 50); doc.setLineWidth(0.8); doc.line(x, y + 22, x + w, y + 22);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(...dim); doc.text(label, x, y + 34);
+  };
+  const half = (W - 2 * M - 30) / 2;
+  field(M, half, `Picked by (print name): ${clean(profile.full_name)}`); field(M + half + 30, half, 'Checked by (print name)'); y += 58;
+  field(M, half, 'Checked by (signature)'); field(M + half + 30, half, 'Date');
+  footer();
+
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  doc.save(`picking-list-${clean(wardName(s.ward_id)).replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '')}-${stamp}.pdf`);
 }
 
 (async () => {

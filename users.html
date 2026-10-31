@@ -94,6 +94,11 @@
       <button class="btn magenta" style="margin-top:14px;" id="create-user-btn">Create login</button>
     </div>
     <div class="card"><h2>Logins</h2><div id="user-list">Loading\u2026</div></div>`;
+  applySubtabs(body, [
+    { id: 'logins', label: 'Logins', heads: ['Logins'] },
+    { id: 'invite', label: 'Invite by email', heads: ['Invite by email', 'Invitations'] },
+    { id: 'create', label: 'Create login', heads: ['Create login'] },
+  ], 'logins');
 
   const formSites = sites.filter(s => wardsForForm.some(w => w.site_id === s.id));
   let formCheckedWards = new Set();
@@ -107,6 +112,7 @@
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-order" style="width:auto;"> Order stock</label></div>
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-process" style="width:auto;"> Process stock</label></div>
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-check-picking" style="width:auto;"> Can check picked requests</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-dashboard" style="width:auto;"> Can see the daily dashboard</label></div>
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-nonurgent" style="width:auto;"> Can mark non-urgent</label></div>
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-freetext" style="width:auto;"> Free-text temp stock item</label></div>
       </div>
@@ -154,10 +160,30 @@
     document.querySelectorAll('.nu-site-scope-cb').forEach(cb => cb.onchange = updateWardGroups);
   }
 
+  // The database refuses these anyway (profiles permission trigger); greying
+  // the boxes out just stops people trying. You can't change your own
+  // permissions, and can only switch ON what you hold yourself.
+  const GRANT_IDS = { 'order': 'can_order', 'process': 'can_process', 'check-picking': 'can_check_picking',
+    'dashboard': 'can_view_dashboard', 'nonurgent': 'can_mark_nonurgent', 'freetext': 'can_freetext_temp_stock',
+    'manage-users': 'can_manage_users', 'manage-ward-staff': 'can_manage_ward_staff',
+    'manage-stocklists': 'can_manage_stocklists', 'manage-wards-sites': 'can_manage_wards_sites', 'approve': 'can_approve_orders' };
+  function limitGrantBoxes(root, isSelf) {
+    if (isSuperuser()) return;
+    root.querySelectorAll('input[type=checkbox]').forEach(cb => {
+      let flag = cb.dataset.perm;
+      if (!flag) { const m = /^(?:ea-|nu-can-)(.+)$/.exec(cb.id || ''); flag = m && GRANT_IDS[m[1]]; }
+      if (!flag) return;
+      if (isSelf || (!profile?.[flag] && !cb.checked)) {
+        cb.disabled = true;
+        cb.title = isSelf ? "You can't change your own permissions." : 'You can only grant permissions you hold yourself.';
+      }
+    });
+  }
+
   // ---------- Invite by email ----------
   const IV_PERMS = [
     ['can_order', 'Order stock'], ['can_process', 'Process stock'], ['can_check_picking', 'Check picked requests'],
-    ['can_mark_nonurgent', 'Mark non-urgent'], ['can_freetext_temp_stock', 'Free-text temp stock item'],
+    ['can_view_dashboard', 'See the daily dashboard'], ['can_mark_nonurgent', 'Mark non-urgent'], ['can_freetext_temp_stock', 'Free-text temp stock item'],
     ['can_approve_orders', 'Approve orders'], ['can_manage_users', 'Manage users'],
     ['can_manage_ward_staff', 'Manage ward staff'], ['can_manage_stocklists', 'Manage stocklists'],
     ['can_manage_wards_sites', 'Manage wards & sites'],
@@ -165,6 +191,7 @@
   ];
   document.getElementById('iv-perms').innerHTML = IV_PERMS.map(([k, label]) =>
     `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400; margin:3px 0;"><input type="checkbox" class="iv-perm" data-perm="${k}" style="width:auto;"> ${esc(label)}</label></div>`).join('');
+  limitGrantBoxes(document, false);  // create-login form and invite tickboxes
   document.getElementById('iv-wards').innerHTML = formSites.map(sv => {
     const ws = wardsForForm.filter(w => w.site_id === sv.id);
     return `<div style="margin-bottom:10px;">
@@ -327,6 +354,7 @@
       can_order: document.getElementById('nu-can-order')?.checked || false,
       can_process: document.getElementById('nu-can-process')?.checked || false,
       can_check_picking: document.getElementById('nu-can-check-picking')?.checked || false,
+      can_view_dashboard: document.getElementById('nu-can-dashboard')?.checked || false,
       can_mark_nonurgent: document.getElementById('nu-can-nonurgent')?.checked || false,
       can_freetext_temp_stock: document.getElementById('nu-can-freetext')?.checked || false,
       can_manage_users: document.getElementById('nu-can-manage-users')?.checked || false,
@@ -393,6 +421,7 @@
       u.can_order ? `<span class="capsule">Order</span>` : '',
       u.can_process ? `<span class="capsule">Process</span>` : '',
       u.can_check_picking ? `<span class="capsule">Checker</span>` : '',
+      u.can_view_dashboard ? `<span class="capsule">Dashboard</span>` : '',
       u.can_approve_orders ? `<span class="capsule">Approve</span>` : '',
       u.can_mark_nonurgent ? `<span class="capsule">Non-urgent</span>` : '',
       u.can_manage_users ? `<span class="capsule">Manage users</span>` : '',
@@ -400,31 +429,40 @@
       u.can_manage_stocklists ? `<span class="capsule">Manage stocklists</span>` : '',
       u.can_manage_wards_sites ? `<span class="capsule">Manage wards/sites</span>` : '',
       u.can_view_bi ? `<span class="capsule">BI</span>` : '',
+      u.can_post_banners ? `<span class="capsule">Banners</span>` : '',
     ].filter(Boolean).join('');
     const accessText = [wardsFor(u.id), sitesFor(u.id)].filter(t => t !== '\u2014').join(' / ') || '\u2014';
-    return `<tr>
-      <td>${esc(u.full_name)}${isSuperuser() ? `<div class="muted" style="font-size:11px;">${esc(u.user_id)}</div>` : ''}</td>
-      <td>${roleLabel(u.role)}</td>
-      <td>${capsules || '<span class="muted">\u2014</span>'}</td>
-      <td class="muted" style="max-width:220px;">${esc(accessText)}</td>
-      <td><span class="badge ${u.active ? 'active' : 'suspended'}">${u.active ? 'Active' : 'Inactive'}</span></td>
-      <td style="text-align:right; white-space:nowrap;">
-        <button class="btn small ghost" data-access="${u.id}">Access</button>
-        ${u.role === 'developer' ? '<span class="muted" style="font-size:11.5px;">Managed via Supabase</span>' : `
-        <button class="btn small ghost" data-reset="${u.id}">Reset password</button>
-        ${(u.id === profile.id || (isSuperuserRole() && u.role === 'developer')) ? '' : `<button class="btn small ${u.active ? 'danger' : 'magenta'}" data-susp="${u.id}">${u.active ? 'Deactivate' : 'Activate'}</button>`}
-        `}
-      </td>
-    </tr><tr id="access-row-${u.id}" class="hidden"><td colspan="6"><div class="access-panel" id="access-panel-${u.id}"></div></td></tr>`;
+    const canSusp = !(u.id === profile.id || (isSuperuserRole() && u.role === 'developer'));
+    return `<div class="u-item${u.active ? '' : ' u-off'}">
+      <div class="u-head" data-access="${u.id}" role="button" tabindex="0" aria-expanded="false">
+        <div class="u-main"><b>${esc(u.full_name)}</b>${isSuperuser() ? `<span class="muted" style="font-size:11px;"> \u00b7 ${esc(u.user_id)}</span>` : ''}
+          <div class="muted" style="font-size:12px;">${esc(accessText)}</div></div>
+        <div class="u-caps">${capsules || '<span class="muted">No functions</span>'}</div>
+        <span class="badge ${u.active ? 'active' : 'suspended'}">${u.active ? 'Active' : 'Inactive'}</span>
+        <span class="u-chev" aria-hidden="true">\u203a</span>
+      </div>
+      <div id="access-row-${u.id}" class="u-body hidden">
+        <div class="u-actions">
+          ${u.role === 'developer' ? '<span class="muted" style="font-size:12px;">Managed via Supabase</span>' : `
+          <button class="btn small ghost" data-reset="${u.id}">Reset password</button>
+          ${canSusp ? `<button class="btn small ${u.active ? 'danger' : 'magenta'}" data-susp="${u.id}">${u.active ? 'Suspend login' : 'Reactivate login'}</button>` : ''}`}
+        </div>
+        <div class="access-panel" id="access-panel-${u.id}"></div>
+      </div>
+    </div>`;
   }
 
+  const roleRank = (r) => { const i = ['developer', 'superuser', 'governance'].indexOf(r); return i < 0 ? 99 : i; };
+  function groupByTitle(list) {
+    const roles = [...new Set(list.map(u => u.role))].sort((x, y) => roleRank(x) - roleRank(y) || roleLabel(x).localeCompare(roleLabel(y)));
+    return roles.map(r => ({ role: r, users: list.filter(u => u.role === r) }));
+  }
   function userTableHtml(list) {
     if (!list.length) return `<div class="empty">No matching logins.</div>`;
-    return `<table><thead><tr><th>Name</th><th>Type</th><th>Functions</th><th>Access</th><th>Status</th><th></th></tr></thead><tbody>
-      ${list.map(userRowHtml).join('')}
-    </tbody></table>`;
+    return list.map(userRowHtml).join('');
   }
 
+  const openTitles = new Set();
   function renderUserTableRoot() {
     const root = document.getElementById('user-table-root');
     const search = document.getElementById('uf-search').value.trim().toLowerCase();
@@ -437,23 +475,15 @@
     if (roleFilter) filtered = filtered.filter(u => u.role === roleFilter);
     if (siteFilter) filtered = filtered.filter(u => effectiveSiteIds(u).includes(siteFilter));
 
-    if (filtersActive || sites.length <= 1) {
-      root.innerHTML = userTableHtml(filtered);
-      attachRowHandlers(root, filtered);
-      return;
-    }
-
-    const groups = sites.map(s => ({ site: s, users: filtered.filter(u => effectiveSiteIds(u).includes(s.id)) }));
-    const unassigned = filtered.filter(u => effectiveSiteIds(u).length === 0);
-    root.innerHTML = groups.map(g => `
-      <details style="margin-bottom:8px; border:1px solid var(--border); border-radius:10px; padding:10px 14px;">
-        <summary style="cursor:pointer; font-weight:600; color:var(--navy);">${esc(g.site.name)} <span class="muted" style="font-weight:400;">(${g.users.length})</span></summary>
-        <div style="margin-top:10px;">${userTableHtml(g.users)}</div>
-      </details>`).join('')
-      + `<details style="border:1px solid var(--border); border-radius:10px; padding:10px 14px;">
-        <summary style="cursor:pointer; font-weight:600; color:var(--navy);">No specific site <span class="muted" style="font-weight:400;">(${unassigned.length})</span></summary>
-        <div style="margin-top:10px;">${userTableHtml(unassigned)}</div>
+    if (!filtered.length) { root.innerHTML = `<div class="empty">No matching logins.</div>`; return; }
+    root.innerHTML = groupByTitle(filtered).map(g => {
+      const inactive = g.users.filter(u => !u.active).length;
+      return `<details class="u-group" ${(filtersActive || openTitles.has(g.role)) ? 'open' : ''} data-role="${esc(g.role)}">
+        <summary>${esc(roleLabel(g.role))} <span class="muted" style="font-weight:400;">(${g.users.length}${inactive ? `, ${inactive} inactive` : ''})</span></summary>
+        <div class="u-list">${userTableHtml(g.users)}</div>
       </details>`;
+    }).join('');
+    root.querySelectorAll('details.u-group').forEach(d => d.addEventListener('toggle', () => { d.open ? openTitles.add(d.dataset.role) : openTitles.delete(d.dataset.role); }));
     attachRowHandlers(root, filtered);
   }
 
@@ -491,7 +521,10 @@
       });
     });
 
-    root.querySelectorAll('[data-access]').forEach(b => b.onclick = () => toggleAccessPanel(b.dataset.access, list));
+    root.querySelectorAll('[data-access]').forEach(b => {
+      const go = () => { b.setAttribute('aria-expanded', String(document.getElementById(`access-row-${b.dataset.access}`).classList.contains('hidden'))); toggleAccessPanel(b.dataset.access, list); };
+      b.onclick = go; b.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+    });
   }
 
   async function toggleAccessPanel(userId, list) {
@@ -515,6 +548,7 @@
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-order" style="width:auto;" ${u.can_order ? 'checked' : ''}> Order stock</label></div>
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-process" style="width:auto;" ${u.can_process ? 'checked' : ''}> Process stock</label></div>
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-check-picking" style="width:auto;" ${u.can_check_picking ? 'checked' : ''}> Can check picked requests</label></div>
+        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-dashboard" style="width:auto;" ${u.can_view_dashboard ? 'checked' : ''}> Can see the daily dashboard</label></div>
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-nonurgent" style="width:auto;" ${u.can_mark_nonurgent ? 'checked' : ''}> Can mark non-urgent</label></div>
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-freetext" style="width:auto;" ${u.can_freetext_temp_stock ? 'checked' : ''}> Free-text temp stock item</label></div>
       </div>
@@ -524,6 +558,7 @@
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-manage-stocklists" style="width:auto;" ${u.can_manage_stocklists ? 'checked' : ''}> Manage stocklists</label></div>
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-manage-wards-sites" style="width:auto;" ${u.can_manage_wards_sites ? 'checked' : ''}> Manage wards &amp; sites</label></div>
         <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-approve" style="width:auto;" ${u.can_approve_orders ? 'checked' : ''}> Approve orders</label></div>
+        ${isSuperuser() ? `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-post-banners" style="width:auto;" ${u.can_post_banners ? 'checked' : ''}> Can post banners</label></div>` : ''}
         ${isDeveloper() ? `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-view-bi" style="width:auto;" ${u.can_view_bi ? 'checked' : ''}> Business Intelligence access</label></div>` : ''}
       </div>
       <label style="margin-top:10px;">Sites (tick one or more to reveal their wards below \u2014 also used as this login's reach for user/stocklist/ward/site management and order approval)</label>
@@ -532,6 +567,7 @@
       <div id="ea-ward-groups-${userId}"></div>
       <button class="btn magenta small" id="save-access-${userId}" style="margin-top:10px;">Save access</button>`;
 
+    limitGrantBoxes(panel, userId === profile?.id);
     const updateWardGroups = () => {
       panel.querySelectorAll('.ea-ward').forEach(cb => { if (cb.checked) checkedWards.add(cb.value); else checkedWards.delete(cb.value); });
       const tickedSites = [...panel.querySelectorAll('.ea-site-scope:checked')].map(c => c.value);
@@ -557,6 +593,7 @@
         can_order: document.getElementById('ea-order').checked,
         can_process: document.getElementById('ea-process').checked,
         can_check_picking: document.getElementById('ea-check-picking').checked,
+        can_view_dashboard: document.getElementById('ea-dashboard').checked,
         can_mark_nonurgent: document.getElementById('ea-nonurgent').checked,
         can_freetext_temp_stock: document.getElementById('ea-freetext').checked,
         can_manage_users: document.getElementById('ea-manage-users').checked,
@@ -565,6 +602,7 @@
         can_manage_wards_sites: document.getElementById('ea-manage-wards-sites').checked,
         can_approve_orders: document.getElementById('ea-approve').checked,
       };
+      if (isSuperuser()) updates.can_post_banners = document.getElementById('ea-post-banners').checked;
       if (isDeveloper()) updates.can_view_bi = document.getElementById('ea-view-bi').checked;
       const { error: updErr } = await sb.from('profiles').update(updates).eq('id', userId);
       if (updErr) return toast(updErr.message, true);

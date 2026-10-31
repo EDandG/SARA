@@ -772,7 +772,7 @@ async function renderComplianceSection(rows) {
 }
 
 (async () => {
-  const p = await requireAuth({ require: (pr) => ['developer', 'superuser'].includes(pr.role) });
+  const p = await requireAuth({ require: (pr) => ['developer', 'superuser'].includes(pr.role) && insightsEnabled() });
   if (!p) return;
   document.getElementById('main').innerHTML = '<div id="body"></div>';
   renderInsights();

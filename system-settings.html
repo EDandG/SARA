@@ -79,10 +79,40 @@ async function renderSystemSettings() {
       <input type="number" min="1" id="history-window" value="${systemSettings.order_history_days || '7'}" style="max-width:120px;" />
       <button class="btn magenta" style="margin-top:14px;" id="save-history-window">Save order history window</button>
     </div>
+    ${isDeveloper() ? `<div class="card">
+      <h2>Paid features</h2>
+      <p class="muted">These are separate paid modules. Each stays hidden from everyone \u2014 including Superusers \u2014 until you switch it on here. Only the Developer sees this card. BI Insights additionally still needs the per-user BI tickbox.</p>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="feat-insights" style="width:auto;" ${insightsEnabled() ? 'checked' : ''} />Insights (ordering and turnaround analytics)</label>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-bi" style="width:auto;" ${biEnabled() ? 'checked' : ''} />BI Insights (business intelligence)</label>
+    </div>` : ''}
+    ${isDeveloper() ? `<div class="card" id="backup-card">
+      <h2>Stocklist backup by email</h2>
+      <p class="muted">Emails an Excel copy of every ward\u2019s stocklist at the interval you choose, so a stocklist can be restored from the Stocklists page if anything goes wrong. The file holds drug names and quantities only \u2014 no patient information. Developer only.</p>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="bk-enabled" style="width:auto;" />Send backups automatically</label>
+      <div class="row" style="margin-top:10px;">
+        <div><label for="bk-interval">Send every</label>
+          <select id="bk-interval">${[1,2,3,4,6,8,12,24,48,168].map(h => `<option value="${h}">${h === 168 ? 'week' : h === 48 ? '2 days' : h === 24 ? 'day' : h + ' hour' + (h > 1 ? 's' : '')}</option>`).join('')}</select></div>
+        <div style="flex:2;"><label for="bk-recipients">Send to (up to 5 email addresses, separated by commas)</label>
+          <input id="bk-recipients" placeholder="name@example.com, name2@example.com" /></div>
+      </div>
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn small" id="bk-save">Save</button>
+        <button class="btn ghost small" id="bk-now">Send a backup now</button>
+      </div>
+      <p class="muted" id="bk-status" style="margin-top:8px;">Loading\u2026</p>
+    </div>` : ''}
     <div class="card">
       <h2>Second-person picking check</h2>
       <p class="muted">When on, a picked request must be checked by a different person (someone with the check permission) before it counts as complete. When off, a request is complete as soon as the picker confirms it, and the record shows the check was not required. Developer and Superuser can both set this.</p>
       <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="check-toggle" style="width:auto;" ${pickingCheckRequired() ? 'checked' : ''} />Require a second-person check</label>
+      <div id="nocheck-wrap" style="margin-top:12px;${pickingCheckRequired() ? ' display:none;' : ''}">
+        <label for="nocheck-label">Wording shown in the audit trail while the check is off</label>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <input id="nocheck-label" maxlength="30" style="max-width:220px;" value="${esc(noCheckLabel())}" />
+          <button class="btn small" id="nocheck-save">Save wording</button>
+        </div>
+        <p class="muted" style="margin-top:6px;">Appears as \u201c<b>Processed</b> by Sam on 14 Oct\u201d. Use a past-tense word, e.g. Processed, Completed or Supplied. With the check on, the trail reads \u201cProcessed by Sam on 14 Oct, checked by Alex on 14 Oct\u201d.</p>
+      </div>
     </div>
     <div class="card">
       <h2>Overdue top-up preview &amp; prefill</h2>
@@ -106,6 +136,13 @@ async function renderSystemSettings() {
       ${systemSettings.login_logo_data_url ? `<button class="btn ghost small" id="login-logo-remove-btn">Remove logo</button>` : ''}
     </div>` : ''}
   `;
+  applySubtabs(body, [
+    { id: 'processing', label: 'Processing & timing', heads: ['Processing cutoff', 'Top-up countdown', 'Duplicate-order', 'Order history', 'Overdue top-up'] },
+    { id: 'checks', label: 'Picking check', heads: ['Second-person'] },
+    { id: 'backup', label: 'Backups', heads: ['Stocklist backup'] },
+    { id: 'branding', label: 'Logos & branding', heads: ['Trust logo', 'Login screen logo'] },
+    { id: 'features', label: 'Paid features', heads: ['Paid features'] },
+  ]);
 
   document.getElementById('save-cutoffs').onclick = async () => {
     const weekday = document.getElementById('cutoff-weekday').value;
@@ -145,6 +182,55 @@ async function renderSystemSettings() {
     toast(enabled ? 'Overdue top-up preview enabled.' : 'Overdue top-up preview disabled.');
   };
 
+  [['feat-insights', 'feature_insights_enabled', 'Insights'], ['feat-bi', 'feature_bi_enabled', 'BI Insights']].forEach(([id, key, label]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.onchange = async (e) => {
+      const on = e.target.checked;
+      const { error } = await sb.from('system_settings').upsert({ key, value: String(on) }, { onConflict: 'key' });
+      if (error) { toast(error.message, true); e.target.checked = !on; return; }
+      systemSettings[key] = String(on);
+      toast(`${label} ${on ? 'switched on' : 'switched off'}.`);
+    };
+  });
+
+
+  // ---- stocklist backup (Developer only) ----
+  if (document.getElementById('backup-card')) {
+    const showBk = async () => {
+      const { data: c, error } = await sb.from('backup_config').select('*').eq('id', 1).single();
+      const st = document.getElementById('bk-status');
+      if (error || !c) { st.textContent = 'Could not load backup settings \u2014 has the latest schema.sql been run?'; return; }
+      document.getElementById('bk-enabled').checked = !!c.enabled;
+      document.getElementById('bk-interval').value = String(c.interval_hours);
+      document.getElementById('bk-recipients').value = (c.recipients || []).join(', ');
+      st.textContent = `${c.last_sent_at ? 'Last backup sent ' + fmtDate(c.last_sent_at) + '. ' : 'No backup sent yet. '}${c.last_status || ''}`;
+    };
+    document.getElementById('bk-save').onclick = async () => {
+      const list = document.getElementById('bk-recipients').value.split(/[\s,;]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
+      const bad = list.find(x => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
+      if (bad) return toast(`\u201c${bad}\u201d is not a valid email address.`, true);
+      if (list.length > 5) return toast('Up to 5 recipients.', true);
+      const enabled = document.getElementById('bk-enabled').checked;
+      if (enabled && !list.length) return toast('Add at least one recipient before switching backups on.', true);
+      const { error } = await sb.from('backup_config').update({ enabled, interval_hours: parseInt(document.getElementById('bk-interval').value, 10), recipients: [...new Set(list)] }).eq('id', 1);
+      if (error) return toast(error.message, true);
+      toast('Backup settings saved.'); showBk();
+    };
+    document.getElementById('bk-now').onclick = async () => {
+      const btn = document.getElementById('bk-now'); btn.disabled = true; btn.textContent = 'Sending\u2026';
+      try {
+        const { data: { session: ss } } = await sb.auth.getSession();
+        const res = await fetch(`${FN_BASE}/backup-stocklists`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ss.access_token}` }, body: JSON.stringify({ force: true }) });
+        let out = {}; try { out = await res.json(); } catch (e) {}
+        if (!res.ok) throw new Error(out.error || 'Backup failed');
+        toast(`Backup sent \u2014 ${out.wards} wards, ${out.lines} lines.`);
+      } catch (e) { toast(e.message, true); }
+      btn.disabled = false; btn.textContent = 'Send a backup now'; showBk();
+    };
+    showBk();
+  }
+
   document.getElementById('check-toggle').onchange = async (e) => {
     const required = e.target.checked;
     if (!required && !confirm('Turn the second-person check off?\n\nRequests picked from now on will complete as soon as they are confirmed. Any request currently waiting for a check will also be marked complete (check not required).')) {
@@ -153,7 +239,17 @@ async function renderSystemSettings() {
     const { data: waived, error } = await sb.rpc('set_picking_check_required', { p_required: required });
     if (error) { toast(error.message, true); e.target.checked = !required; return; }
     systemSettings.picking_check_required = String(required);
+    const nw = document.getElementById('nocheck-wrap'); if (nw) nw.style.display = required ? 'none' : '';
     toast(required ? 'Second-person check switched on.' : `Second-person check switched off${waived ? ` (${waived} waiting request${waived > 1 ? 's' : ''} completed)` : ''}.`);
+  };
+
+  document.getElementById('nocheck-save').onclick = async () => {
+    const v = document.getElementById('nocheck-label').value.trim();
+    if (!v || v.length > 30) return toast('Enter a word or short phrase (up to 30 characters).', true);
+    const { error } = await sb.from('system_settings').upsert({ key: 'no_check_label', value: v });
+    if (error) return toast(error.message, true);
+    systemSettings.no_check_label = v;
+    toast('Wording saved.');
   };
 
   const topupBtn = document.getElementById('save-topup-window');

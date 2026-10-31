@@ -9,6 +9,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
 <script src="vendor/jspdf.umd.min.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
 </head>
 <body data-page="stocklists.html">
 <div id="app">
@@ -114,14 +115,23 @@ async function publishFromBuilder() {
   const badRow = toPublish.find(r => r.min_qty !== null && r.min_qty > r.max_qty);
   if (badRow) return toast(`${badRow.medicine_name}: min qty can\u2019t be greater than max qty.`, true);
 
-  const { error: delErr } = await sb.from('blist_items').delete().eq('ward_id', ward_id);
-  if (delErr) return toast(delErr.message, true);
-  const { error: insErr } = await sb.from('blist_items').insert(toPublish.map(({ medicine_name, min_qty, max_qty }) => ({ medicine_name, min_qty, max_qty, ward_id })));
-  if (insErr) return toast(insErr.message, true);
-  toast(`Stocklist published \u2014 ${toPublish.length} drug(s).`);
-  loadStockList();
-  loadStockHistory();
-  loadBuilder(ward_id);
+  const wardName = wards.find(w => w.id === ward_id)?.name || '';
+  confirmChange({
+    scope: 'ward', wardName,
+    title: `Replace ${wardName || 'this ward'}\u2019s whole stocklist with ${toPublish.length} drug${toPublish.length === 1 ? '' : 's'}`,
+    details: 'Anything not ticked in the builder will be removed from this ward\u2019s stocklist.',
+    confirmLabel: 'Publish stocklist',
+    onConfirm: async () => {
+      const { error: delErr } = await sb.from('blist_items').delete().eq('ward_id', ward_id);
+      if (delErr) return toast(delErr.message, true);
+      const { error: insErr } = await sb.from('blist_items').insert(toPublish.map(({ medicine_name, min_qty, max_qty }) => ({ medicine_name, min_qty, max_qty, ward_id })));
+      if (insErr) return toast(insErr.message, true);
+      toast(`Stocklist published \u2014 ${toPublish.length} drug(s).`);
+      loadStockList();
+      loadStockHistory();
+      loadBuilder(ward_id);
+    },
+  });
 }
 
 async function exportStocklistPdf(ward_id) {
@@ -314,14 +324,15 @@ async function loadStockList() {
 
   if (canEdit) {
     listEl.querySelectorAll('[data-remove-item]').forEach(b => b.onclick = () => {
-      confirmDialog('Remove from this ward\u2019s stocklist?', `${esc(b.dataset.name)} will no longer appear on this ward\u2019s stocklist or in the drug builder for it. This doesn\u2019t remove it from the drug catalog itself \u2014 it can be added back here at any time.`, 'Remove', async () => {
+      confirmChange({ scope: 'ward', wardName: wards.find(w => w.id === ward_id)?.name || '', title: `Remove ${b.dataset.name} from this ward\u2019s stocklist`,
+        details: 'It stays in the drug catalog and can be added back here at any time.', confirmLabel: 'Remove drug', onConfirm: async () => {
         const { error: delErr } = await sb.from('blist_items').delete().eq('id', b.dataset.removeItem);
         if (delErr) return toast(delErr.message, true);
         toast(`${b.dataset.name} removed from this ward\u2019s stocklist.`);
         loadStockList();
         loadStockHistory();
         loadBuilder(ward_id);
-      }, true);
+      } });
     });
     listEl.querySelectorAll('[data-save-qty]').forEach(b => b.onclick = async () => {
       const id = b.dataset.saveQty;
@@ -331,20 +342,145 @@ async function loadStockList() {
       const minRaw = minInput.value.trim();
       const newMin = minRaw === '' ? null : Math.max(0, parseInt(minRaw, 10) || 0);
       if (newMin !== null && newMin > newMax) return toast('Min qty can\u2019t be greater than max qty.', true);
-      const { error: updErr } = await sb.from('blist_items').update({ max_qty: newMax, min_qty: newMin }).eq('id', id);
-      if (updErr) return toast(updErr.message, true);
-      toast('Quantities updated.');
-      loadStockHistory();
+      const nm = b.closest('tr')?.querySelector('td')?.textContent?.trim() || 'this drug';
+      confirmChange({ scope: 'ward', wardName: wards.find(w => w.id === ward_id)?.name || '',
+        title: `Change ${nm} to min ${newMin ?? '\u2014'} / max ${newMax}`, confirmLabel: 'Save quantities',
+        onConfirm: async () => {
+          const { error: updErr } = await sb.from('blist_items').update({ max_qty: newMax, min_qty: newMin }).eq('id', id);
+          if (updErr) return toast(updErr.message, true);
+          toast('Quantities updated.');
+          loadStockHistory();
+        } });
     });
-    listEl.querySelectorAll('.reorder-approval-cb').forEach(cb => cb.onchange = async () => {
-      const { error: updErr } = await sb.from('blist_items').update({ requires_reorder_approval: cb.checked }).eq('id', cb.dataset.item);
-      if (updErr) { toast(updErr.message, true); cb.checked = !cb.checked; return; }
-      toast(cb.checked
-        ? 'This drug is now restricted \u2014 a repeat order within the reorder-approval window will be held for a pharmacist or approved technician.'
-        : 'No longer restricted for this ward.');
-      loadStockHistory();
+    listEl.querySelectorAll('.reorder-approval-cb').forEach(cb => cb.onchange = () => {
+      const wanted = cb.checked;
+      const nm = cb.closest('tr')?.querySelector('td')?.textContent?.trim() || 'this drug';
+      confirmChange({ scope: 'ward', wardName: wards.find(w => w.id === ward_id)?.name || '',
+        title: wanted ? `Restrict repeat orders of ${nm}` : `Stop restricting repeat orders of ${nm}`,
+        details: wanted ? 'A repeat order within the reorder-approval window will be held for a pharmacist or approved technician.' : '',
+        confirmLabel: 'Confirm change',
+        onCancel: () => { cb.checked = !wanted; },
+        onConfirm: async () => {
+          const { error: updErr } = await sb.from('blist_items').update({ requires_reorder_approval: wanted }).eq('id', cb.dataset.item);
+          if (updErr) { toast(updErr.message, true); cb.checked = !wanted; return; }
+          toast(wanted ? 'This drug is now restricted for this ward.' : 'No longer restricted for this ward.');
+          loadStockHistory();
+        } });
     });
   }
+}
+
+
+// ---------- Restore from an Excel backup ----------
+let restorePlan = [];   // [{ ward, site, wardId, items, problems, cur, add, rem, chg }]
+
+async function handleRestoreFile() {
+  const input = document.getElementById('restore-file');
+  const out = document.getElementById('restore-preview');
+  const file = input.files[0];
+  restorePlan = [];
+  if (!file) { out.innerHTML = ''; return; }
+  out.textContent = 'Reading the file…';
+  let rows;
+  try {
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const ws = wb.Sheets['Stocklists'] || wb.Sheets[wb.SheetNames[0]];
+    rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+  } catch (e) { out.innerHTML = '<div class="empty">That file could not be read as an Excel workbook.</div>'; return; }
+
+  const norm = (k) => String(k).trim().toLowerCase();
+  const pick = (r, ...names) => { for (const k of Object.keys(r)) if (names.includes(norm(k))) return r[k]; return ''; };
+  if (!rows.length || !('medicine' in Object.fromEntries(Object.keys(rows[0]).map(k => [norm(k), 1])))) {
+    out.innerHTML = '<div class="empty">This does not look like a Stock Req backup — expected a sheet called “Stocklists” with columns Site, Ward, Medicine, Min qty, Max qty.</div>'; return;
+  }
+
+  const catalogByLower = Object.fromEntries(catalog.map(c => [c.medicine_name.toLowerCase(), c.medicine_name]));
+  const siteById = Object.fromEntries(sites.map(x => [x.id, x.name]));
+  const groups = new Map();
+  rows.forEach((r, idx) => {
+    const wardName = String(pick(r, 'ward')).trim(), siteName = String(pick(r, 'site')).trim(), med = String(pick(r, 'medicine')).trim();
+    if (!wardName && !med) return;
+    const key = `${siteName}\u0001${wardName}`;
+    if (!groups.has(key)) groups.set(key, { ward: wardName, site: siteName, items: [], problems: [] });
+    const g = groups.get(key);
+    const rowNo = idx + 2;
+    const real = catalogByLower[med.toLowerCase()];
+    if (!real) { g.problems.push(`Row ${rowNo}: “${med}” is not in the drug catalogue`); return; }
+    const max = parseInt(pick(r, 'max qty'), 10);
+    const minRaw = String(pick(r, 'min qty')).trim();
+    const min = minRaw === '' ? null : parseInt(minRaw, 10);
+    if (!Number.isInteger(max) || max < 1) { g.problems.push(`Row ${rowNo}: ${real} has no valid max qty`); return; }
+    if (min !== null && (!Number.isInteger(min) || min < 0 || min > max)) { g.problems.push(`Row ${rowNo}: ${real} has an invalid min qty`); return; }
+    if (g.items.some(i => i.medicine_name === real)) { g.problems.push(`Row ${rowNo}: ${real} appears twice`); return; }
+    g.items.push({ medicine_name: real, min_qty: min, max_qty: max,
+      requires_reorder_approval: /^(y|yes|true|1)$/i.test(String(pick(r, 'needs reorder approval')).trim()) });
+  });
+
+  const wardIds = [];
+  groups.forEach(g => {
+    const w = wards.find(w => w.name.trim().toLowerCase() === g.ward.toLowerCase() && (siteById[w.site_id] || '').trim().toLowerCase() === g.site.toLowerCase());
+    g.wardId = w?.id || null;
+    if (!w) g.problems.push(`No ward called “${g.ward}” at site “${g.site}” exists in the system`);
+    else wardIds.push(w.id);
+  });
+  const { data: curRows, error } = wardIds.length
+    ? await sb.from('blist_items').select('ward_id, medicine_name, min_qty, max_qty, requires_reorder_approval').in('ward_id', wardIds)
+    : { data: [] };
+  if (error) { out.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+
+  restorePlan = [...groups.values()].sort((a, b) => a.site.localeCompare(b.site) || a.ward.localeCompare(b.ward)).map(g => {
+    const cur = (curRows || []).filter(c => c.ward_id === g.wardId);
+    const curBy = Object.fromEntries(cur.map(c => [c.medicine_name, c]));
+    const newBy = Object.fromEntries(g.items.map(i => [i.medicine_name, i]));
+    const add = g.items.filter(i => !curBy[i.medicine_name]).length;
+    const rem = cur.filter(c => !newBy[c.medicine_name]).length;
+    const chg = g.items.filter(i => { const c = curBy[i.medicine_name]; return c && (c.max_qty !== i.max_qty || (c.min_qty ?? null) !== (i.min_qty ?? null) || !!c.requires_reorder_approval !== i.requires_reorder_approval); }).length;
+    return { ...g, cur: cur.length, add, rem, chg };
+  });
+  renderRestorePreview();
+}
+
+function renderRestorePreview() {
+  const out = document.getElementById('restore-preview');
+  if (!restorePlan.length) { out.innerHTML = '<div class="empty">No stocklist rows found in that file.</div>'; return; }
+  out.innerHTML = `<div style="overflow-x:auto;"><table><thead><tr><th style="width:36px;"></th><th>Site</th><th>Ward</th><th>Now</th><th>In backup</th><th>Would add</th><th>Would remove</th><th>Would change</th><th></th></tr></thead><tbody>
+    ${restorePlan.map((g, i) => {
+      const blocked = !g.wardId || g.problems.length > 0;
+      const noChange = !blocked && !g.add && !g.rem && !g.chg;
+      return `<tr>
+        <td><input type="checkbox" class="restore-cb" data-i="${i}" ${blocked || noChange ? 'disabled' : 'checked'} /></td>
+        <td>${esc(g.site)}</td><td>${esc(g.ward)}</td><td>${g.cur}</td><td>${g.items.length}</td>
+        <td>${g.add}</td><td>${g.rem}</td><td>${g.chg}</td>
+        <td class="muted">${blocked ? `<span style="color:#9b1239">Cannot restore: ${esc(g.problems.slice(0, 3).join('; '))}${g.problems.length > 3 ? ` (+${g.problems.length - 3} more)` : ''}</span>` : noChange ? 'Already identical' : ''}</td>
+      </tr>`; }).join('')}
+    </tbody></table></div>
+    <button class="btn magenta" id="restore-apply" style="margin-top:12px;">Restore selected wards</button>`;
+  document.getElementById('restore-apply').onclick = applyRestore;
+}
+
+function applyRestore() {
+  const chosen = [...document.querySelectorAll('.restore-cb:checked')].map(cb => restorePlan[+cb.dataset.i]);
+  if (!chosen.length) return toast('Tick at least one ward to restore.', true);
+  const adds = chosen.reduce((n, g) => n + g.add, 0), rems = chosen.reduce((n, g) => n + g.rem, 0), chgs = chosen.reduce((n, g) => n + g.chg, 0);
+  confirmChange({
+    scope: chosen.length === 1 ? 'ward' : 'wards', wardName: chosen[0].ward, wardCount: chosen.length,
+    title: `Replace the stocklist${chosen.length === 1 ? '' : 's'} of ${chosen.length === 1 ? chosen[0].ward : chosen.length + ' wards'} with the backup`,
+    details: `In total this will add ${adds}, remove ${rems} and change ${chgs} stocklist line${chgs === 1 ? '' : 's'}.`,
+    confirmLabel: `Restore ${chosen.length} ward${chosen.length === 1 ? '' : 's'}`,
+    onConfirm: async () => {
+      let ok = 0; const failed = [];
+      for (const g of chosen) {
+        const { error } = await sb.rpc('restore_stocklist', { p_ward: g.wardId, p_items: g.items });
+        if (error) failed.push(`${g.ward}: ${error.message}`); else ok++;
+      }
+      if (failed.length) toast(`Restored ${ok}; failed: ${failed.join(' | ')}`, true);
+      else toast(`Restored ${ok} ward${ok === 1 ? '' : 's'} from the backup.`);
+      document.getElementById('restore-file').value = '';
+      document.getElementById('restore-preview').innerHTML = '';
+      restorePlan = [];
+      loadStockList(); loadStockHistory(); loadBuilder(document.getElementById('stock-ward').value);
+    },
+  });
 }
 
 async function renderAdminStock() {
@@ -402,6 +538,12 @@ async function renderAdminStock() {
         <div style="align-self:flex-end;"><button class="btn danger small" id="bulk-remove-btn">Remove from all wards</button></div>
       </div>
     </div>
+    <div class="card">
+      <h2>Restore from a backup file</h2>
+      <p class="muted">Upload a stocklist backup (the Excel file emailed to you). You will see exactly what would change for each ward before anything is applied. Restoring a ward replaces its whole stocklist with the backup\u2019s version. Wards that are not in the file are left alone.</p>
+      <input type="file" id="restore-file" accept=".xlsx,.xls" />
+      <div id="restore-preview" style="margin-top:12px;"></div>
+    </div>
     <div class="card"><h2>Recent changes to this ward's stocklist</h2><div id="stock-history">Loading\u2026</div></div>`;
 
   document.getElementById('stock-ward').onchange = () => {
@@ -409,6 +551,7 @@ async function renderAdminStock() {
     loadStockHistory();
     loadBuilder(document.getElementById('stock-ward').value);
   };
+  document.getElementById('restore-file').onchange = handleRestoreFile;
   document.getElementById('builder-search').oninput = renderBuilderList;
   document.getElementById('builder-publish-btn').onclick = publishFromBuilder;
   document.getElementById('export-pdf-btn').onclick = () => exportStocklistPdf(document.getElementById('stock-ward').value);
@@ -421,15 +564,19 @@ async function renderAdminStock() {
     if (!name) return toast('Choose a medicine.', true);
     if (minQty !== null && minQty > maxQty) return toast('Min qty can\u2019t be greater than max qty.', true);
     const ward_id = document.getElementById('stock-ward').value;
-    const { error: insErr } = await sb.from('blist_items').insert({ ward_id, medicine_name: name, min_qty: minQty, max_qty: maxQty });
-    if (insErr) return toast(insErr.message.includes('duplicate') ? 'Already on this ward\u2019s stocklist.' : insErr.message, true);
-    document.getElementById('add-drug-name').value = '';
-    document.getElementById('add-drug-minqty').value = '';
-    document.getElementById('add-drug-maxqty').value = '1';
-    toast(`${name} added to this ward\u2019s stocklist.`);
-    loadStockList();
-    loadStockHistory();
-    loadBuilder(ward_id);
+    confirmChange({ scope: 'ward', wardName: wards.find(w => w.id === ward_id)?.name || '',
+      title: `Add ${name} to this ward\u2019s stocklist (max ${maxQty})`, confirmLabel: 'Add drug',
+      onConfirm: async () => {
+        const { error: insErr } = await sb.from('blist_items').insert({ ward_id, medicine_name: name, min_qty: minQty, max_qty: maxQty });
+        if (insErr) return toast(insErr.message.includes('duplicate') ? 'Already on this ward\u2019s stocklist.' : insErr.message, true);
+        document.getElementById('add-drug-name').value = '';
+        document.getElementById('add-drug-minqty').value = '';
+        document.getElementById('add-drug-maxqty').value = '1';
+        toast(`${name} added to this ward\u2019s stocklist.`);
+        loadStockList();
+        loadStockHistory();
+        loadBuilder(ward_id);
+      } });
   };
 
   document.getElementById('bulk-add-btn').onclick = async () => {
@@ -444,16 +591,22 @@ async function renderAdminStock() {
     const existingIds = new Set((existing || []).map(r => r.ward_id));
     const toInsert = activeWardIds.filter(id => !existingIds.has(id)).map(ward_id => ({ ward_id, medicine_name: name, min_qty: minQty, max_qty: maxQty }));
     if (!toInsert.length) return toast('Every active ward already stocks this drug.', true);
-    const { error: insErr } = await sb.from('blist_items').insert(toInsert);
-    if (insErr) return toast(insErr.message, true);
-    document.getElementById('bulk-add-name').value = '';
-    document.getElementById('bulk-add-minqty').value = '';
-    document.getElementById('bulk-add-maxqty').value = '1';
-    toast(`${name} added to ${toInsert.length} ward${toInsert.length > 1 ? 's' : ''} (${existingIds.size} already had it).`);
-    loadBulkRemoveOptions();
-    loadStockList();
-    loadStockHistory();
-    loadBuilder(document.getElementById('stock-ward').value);
+    confirmChange({ scope: 'all', wardCount: toInsert.length,
+      title: `Add ${name} (max ${maxQty}) to ${toInsert.length} ward stocklist${toInsert.length > 1 ? 's' : ''}`,
+      details: `${existingIds.size} ward${existingIds.size === 1 ? '' : 's'} already stock${existingIds.size === 1 ? 's' : ''} it and will be skipped.`,
+      confirmLabel: `Add to ${toInsert.length} wards`,
+      onConfirm: async () => {
+        const { error: insErr } = await sb.from('blist_items').insert(toInsert);
+        if (insErr) return toast(insErr.message, true);
+        document.getElementById('bulk-add-name').value = '';
+        document.getElementById('bulk-add-minqty').value = '';
+        document.getElementById('bulk-add-maxqty').value = '1';
+        toast(`${name} added to ${toInsert.length} ward${toInsert.length > 1 ? 's' : ''} (${existingIds.size} already had it).`);
+        loadBulkRemoveOptions();
+        loadStockList();
+        loadStockHistory();
+        loadBuilder(document.getElementById('stock-ward').value);
+      } });
   };
 
   async function loadBulkRemoveOptions() {
@@ -473,14 +626,18 @@ async function renderAdminStock() {
     const { data: rows, error: selErr } = await sb.from('blist_items').select('id').eq('medicine_name', name);
     if (selErr) return toast(selErr.message, true);
     if (!rows || !rows.length) { toast('No ward stocks this drug.', true); return loadBulkRemoveOptions(); }
-    if (!confirm(`Remove ${name} from ${rows.length} ward stocklist${rows.length > 1 ? 's' : ''}?\n\nIt stays in the drug catalog, and you can add it back later.`)) return;
-    const { error: delErr } = await sb.from('blist_items').delete().eq('medicine_name', name);
-    if (delErr) return toast(delErr.message, true);
-    toast(`${name} removed from ${rows.length} ward${rows.length > 1 ? 's' : ''}.`);
-    loadStockList();
-    loadStockHistory();
-    loadBuilder(document.getElementById('stock-ward').value);
-    loadBulkRemoveOptions();
+    confirmChange({ scope: 'all', wardCount: rows.length,
+      title: `Remove ${name} from ${rows.length} ward stocklist${rows.length > 1 ? 's' : ''}`,
+      details: 'It stays in the drug catalog, and can be added back later.', confirmLabel: `Remove from ${rows.length} wards`,
+      onConfirm: async () => {
+        const { error: delErr } = await sb.from('blist_items').delete().eq('medicine_name', name);
+        if (delErr) return toast(delErr.message, true);
+        toast(`${name} removed from ${rows.length} ward${rows.length > 1 ? 's' : ''}.`);
+        loadStockList();
+        loadStockHistory();
+        loadBuilder(document.getElementById('stock-ward').value);
+        loadBulkRemoveOptions();
+      } });
   };
 
   await loadStockList();

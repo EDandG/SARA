@@ -48,19 +48,21 @@
 
   const tiles = buildAreaTiles();
 
-  if (!tiles.length) {
+  const showDash = canViewDashboard();
+  if (!tiles.length && !showDash) {
     main.innerHTML = `<div class="card"><div class="empty">Your account has no functions enabled yet. Contact a superuser or admin.</div></div>`;
     return;
   }
 
   // Single area of function -> skip the picker, go straight there.
-  if (tiles.length === 1) {
+  if (tiles.length === 1 && !showDash) {
     window.location.href = tiles[0].firstHref;
     return;
   }
 
   main.innerHTML = `
-    <div class="card">
+    <div id="dashboard-mount"></div>
+    ${tiles.length ? `<div class="card">
       <h2>What would you like to do?</h2>
       <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:10px;">
         ${tiles.map(t => `
@@ -69,7 +71,9 @@
             <div class="label">${esc(t.label)}</div>
           </a>`).join('')}
       </div>
-    </div>`;
+    </div>` : ''}`;
+
+  if (showDash) renderDashboardPanel(document.getElementById('dashboard-mount'));
 
   // Red badge on "Complete final check" showing requests waiting for someone else to check.
   const checkTile = main.querySelector('a.home-tile[href$="#awaiting-check"]');
