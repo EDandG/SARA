@@ -1248,6 +1248,36 @@ function renderPageNav(currentHref) {
     (meta ? `<div class="page-head"><div class="ph-icon">${uiIcon(meta[0], 24)}</div><div><h1>${esc(meta[1])}</h1><p>${esc(meta[2])}</p></div></div>` : '');
 }
 
+
+// ---------- WARD PICKER TOOLS: search + select all for a list of ward tickboxes ----------
+function wardPickerSetup(container, cbClass) {
+  if (!container) return;
+  let tools = container.previousElementSibling;
+  if (!tools || !tools.classList.contains('wp-tools')) {
+    tools = document.createElement('div');
+    tools.className = 'wp-tools';
+    tools.innerHTML = `<input type="text" class="wp-search" placeholder="Search wards\u2026" autocomplete="off" aria-label="Search wards" />
+      <button type="button" class="btn small ghost wp-all">Select all shown</button>
+      <button type="button" class="btn small ghost wp-none">Clear shown</button>
+      <span class="muted wp-count" style="font-size:12px;"></span>`;
+    container.parentNode.insertBefore(tools, container);
+  }
+  const boxes = () => [...container.querySelectorAll(`input.${cbClass}`)];
+  const shown = () => boxes().filter(cb => cb.closest('label').style.display !== 'none');
+  const count = () => { tools.querySelector('.wp-count').textContent = boxes().length ? `${boxes().filter(c => c.checked).length} of ${boxes().length} selected` : ''; };
+  const apply = () => {
+    const q = tools.querySelector('.wp-search').value.trim().toLowerCase();
+    boxes().forEach(cb => { const l = cb.closest('label'); l.style.display = (!q || l.textContent.toLowerCase().includes(q)) ? '' : 'none'; });
+    [...container.children].forEach(g => { const bs = g.querySelectorAll(`input.${cbClass}`); if (bs.length) g.style.display = [...bs].some(cb => cb.closest('label').style.display !== 'none') ? '' : 'none'; });
+    count();
+  };
+  tools.querySelector('.wp-search').oninput = apply;
+  tools.querySelector('.wp-all').onclick = () => { shown().forEach(cb => { cb.checked = true; }); count(); };
+  tools.querySelector('.wp-none').onclick = () => { shown().forEach(cb => { cb.checked = false; }); count(); };
+  container.onchange = (e) => { if (e.target.matches && e.target.matches(`input.${cbClass}`)) count(); };
+  apply();
+}
+
 // ---------- ADMIN SHARED HELPERS (sites/wards/topup-days pages) ----------
 async function refreshSitesWards() {
   const [{ data: siteRows }, { data: wardRows }] = await Promise.all([

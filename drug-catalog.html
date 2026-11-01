@@ -41,10 +41,17 @@ let catalogPreview = [];
 async function renderDrugCatalog() {
   const body = document.getElementById('body');
   body.innerHTML = `
+    <div class="card">
+      <h2>Classes</h2>
+      <p class="muted">Step 1. Create a class for each kind of drug (for example Injection, TTO pack, Fridge storage). Every drug in the catalogue is tagged with its class, and stocklists and printed lists group drugs by it. Change a drug\u2019s class here and it moves in every stocklist automatically. A class with no drugs never shows on a printed list.</p>
+      <div class="row"><div><label>New class name</label><input type="text" id="new-section-name" placeholder="e.g. Cold store" /></div>
+        <div style="align-self:flex-end;"><button class="btn magenta small" id="add-section-btn">Add class</button></div></div>
+      <div id="section-list" style="margin-top:10px;">Loading\u2026</div>
+    </div>
     ${isDeveloper() ? `
     <div class="card">
       <h2>Import from spreadsheets</h2>
-      <p class="muted">Drop one or more Excel or CSV sheets at once. For each sheet, choose its <b>class</b> (for example Injection or TTO pack \u2014 create these under Sections first), then pick the drug name and pack size columns. Drugs already in the catalogue, or repeated across sheets, are only added once, and every drug is tagged with its sheet\u2019s class so it lands in the right section when you build stocklists.</p>
+      <p class="muted">Drop one or more Excel or CSV sheets at once. For each sheet, choose its <b>class</b> (for example Injection or TTO pack \u2014 create these under Classes first), then pick the drug name and pack size columns. Drugs already in the catalogue, or repeated across sheets, are only added once, and every drug is tagged with its sheet\u2019s class so it lands in the right section when you build stocklists.</p>
       <div class="file-drop" id="drop-zone">Drop Excel or CSV sheets here, or click to choose them</div>
       <input type="file" id="csv-input" accept=".csv,.xlsx,.xls" class="hidden" multiple />
       <div id="csv-preview"></div>
@@ -54,16 +61,10 @@ async function renderDrugCatalog() {
       <div class="row">
         <div><label>Medicine name</label><input type="text" id="add-drug-name" placeholder="e.g. Diazepam 5mg" /></div>
         <div><label>Pack size <span class="muted" style="font-weight:400;">(optional)</span></label><input type="text" id="add-drug-pack" placeholder="e.g. 28 tablets" /></div>
+        <div><label>Class <span class="muted" style="font-weight:400;">(optional)</span></label><select id="add-drug-class"><option value="">\u2014 no class \u2014</option></select></div>
         <div style="align-self:flex-end;"><button class="btn magenta small" id="add-drug-btn">Add</button></div>
       </div>
     </div>` : ''}
-    <div class="card">
-      <h2>Sections</h2>
-      <p class="muted">Groupings like "Cold store", "Injections" or "TTO packs" — shown as subheadings on a ward's printed stocklist, so nurses know where to physically look. A drug can belong to more than one.</p>
-      <div class="row"><div><label>New section name</label><input type="text" id="new-section-name" placeholder="e.g. Cold store" /></div>
-        <div style="align-self:flex-end;"><button class="btn magenta small" id="add-section-btn">Add section</button></div></div>
-      <div id="section-list" style="margin-top:10px;">Loading\u2026</div>
-    </div>
     <div class="card">
       <h2>Substitution groups</h2>
       <p class="muted">For when the exact pack requested is out of stock but a different pack size of the <b>same drug, same strength</b> is available \u2014 e.g. Diazepam 5mg 28-tablet pack and Diazepam 5mg 30-tablet pack. Group only genuinely interchangeable packs together; whoever's processing an order will only ever be offered what's explicitly linked here. Turned on per ward from the Wards page.</p>
@@ -83,8 +84,10 @@ async function renderDrugCatalog() {
       const name = document.getElementById('add-drug-name').value.trim();
       const packSize = document.getElementById('add-drug-pack').value.trim();
       if (!name) return toast('Enter a medicine name.', true);
-      const { error } = await sb.from('drug_catalog').insert({ medicine_name: name, pack_size: packSize || null, created_by: profile.id });
+      const { data: ins, error } = await sb.from('drug_catalog').insert({ medicine_name: name, pack_size: packSize || null, created_by: profile.id }).select('id').single();
       if (error) return toast(error.message.includes('duplicate') ? 'Already in the catalog.' : error.message, true);
+      const cls = document.getElementById('add-drug-class').value;
+      if (cls && ins?.id) await sb.from('drug_catalog_sections').insert({ drug_catalog_id: ins.id, section_id: cls });
       document.getElementById('add-drug-name').value = '';
       document.getElementById('add-drug-pack').value = '';
       toast(`${name} added to the catalog.`);
@@ -94,11 +97,11 @@ async function renderDrugCatalog() {
 
   document.getElementById('add-section-btn').onclick = async () => {
     const name = document.getElementById('new-section-name').value.trim();
-    if (!name) return toast('Enter a section name.', true);
+    if (!name) return toast('Enter a class name.', true);
     const { error } = await sb.from('drug_sections').insert({ name, created_by: profile.id });
-    if (error) return toast(error.message.includes('duplicate') ? 'That section already exists.' : error.message, true);
+    if (error) return toast(error.message.includes('duplicate') ? 'That class already exists.' : error.message, true);
     document.getElementById('new-section-name').value = '';
-    toast('Section added.');
+    toast('Class added.');
     loadSectionList();
     loadCatalogList();
   };
@@ -196,7 +199,9 @@ async function loadSectionList() {
   const el = document.getElementById('section-list');
   const { data, error } = await sb.from('drug_sections').select('*').order('name');
   if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
-  if (!data?.length) { el.innerHTML = `<div class="empty">No sections yet \u2014 add one above.</div>`; return; }
+  if (!data?.length) { el.innerHTML = `<div class="empty">No classes yet \u2014 add one above.</div>`; return; }
+  const addSel = document.getElementById('add-drug-class');
+  if (addSel) { const cur = addSel.value; addSel.innerHTML = '<option value="">\u2014 no class \u2014</option>' + data.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join(''); addSel.value = cur; }
   const { data: lk } = await sb.from('drug_catalog_sections').select('section_id');
   const cnt = {}; (lk || []).forEach(l => { cnt[l.section_id] = (cnt[l.section_id] || 0) + 1; });
   el.innerHTML = data.map(s => `<div style="display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--border);">
@@ -207,10 +212,10 @@ async function loadSectionList() {
     </div>`).join('');
   el.querySelectorAll('[data-pick-section]').forEach(b => b.onclick = () => openSectionPicker(b.dataset.pickSection, b.dataset.name));
   el.querySelectorAll('[data-remove-section]').forEach(b => b.onclick = () => {
-    confirmDialog('Remove this section?', `"${esc(b.dataset.name)}" will no longer group any drug on a printed stocklist. This doesn't remove the drugs themselves from the catalog.`, 'Remove', async () => {
+    confirmDialog('Remove this class?', `"${esc(b.dataset.name)}" will no longer group any drug on a stocklist. This doesn't remove the drugs themselves from the catalog.`, 'Remove', async () => {
       const { error } = await sb.from('drug_sections').delete().eq('id', b.dataset.removeSection);
       if (error) return toast(error.message, true);
-      toast('Section removed.');
+      toast('Class removed.');
       loadSectionList();
       loadCatalogList();
     }, true);
@@ -256,7 +261,7 @@ async function openSectionPicker(sectionId, sectionName) {
     const btn = document.getElementById('sp-save'); btn.disabled = true;
     if (add.length) { const { error } = await sb.from('drug_catalog_sections').insert(add); if (error) { document.getElementById('sp-error').textContent = error.message; btn.disabled = false; return; } }
     if (del.length) { const { error } = await sb.from('drug_catalog_sections').delete().eq('section_id', sectionId).in('drug_catalog_id', del); if (error) { document.getElementById('sp-error').textContent = error.message; btn.disabled = false; return; } }
-    closeModal(); toast('Section updated.'); loadSectionList(); loadCatalogList();
+    closeModal(); toast('Class updated.'); loadSectionList(); loadCatalogList();
   };
   draw();
 }
@@ -296,7 +301,7 @@ function renderCatalogFiles() {
   if (!catalogFiles.length) { out.innerHTML = ''; return; }
   const secOpts = (sel) => `<option value="">— no class —</option>` + catalogSections.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
   out.innerHTML = `
-    ${catalogSections.length ? '' : '<p class="muted" style="margin-top:12px; color:var(--amber);">No classes exist yet. Create them under Sections below first, then drop the sheets again to tag them.</p>'}
+    ${catalogSections.length ? '' : '<p class="muted" style="margin-top:12px; color:var(--amber);">No classes exist yet. Create them under Classes above first, then drop the sheets again to tag them.</p>'}
     ${catalogFiles.map(f => {
       const ncol = Math.max(...f.rows.map(r => r.length));
       const head = f.rows[0].map(c => String(c).trim());
@@ -306,7 +311,7 @@ function renderCatalogFiles() {
         <div style="display:flex; align-items:center; gap:8px;"><b style="flex:1;">${esc(f.name)}</b><span class="muted" style="font-size:12.5px;">${f.rows.length} row${f.rows.length === 1 ? '' : 's'}</span>
           <button class="btn small ghost" data-rmfile="${f.id}" title="Remove this sheet">${uiIcon('x', 13)}</button></div>
         <div class="row" style="margin-top:8px;">
-          <div><label>Class (section) for this sheet</label><select data-k="sectionId">${secOpts(f.sectionId)}</select></div>
+          <div><label>Class for this sheet</label><select data-k="sectionId">${secOpts(f.sectionId)}</select></div>
           <div><label>Drug name column</label><select data-k="nameCol">${opt(f.nameCol, true)}</select></div>
           <div><label>Pack size column <span class="muted" style="font-weight:400;">(optional)</span></label><select data-k="packCol">${opt(f.packCol, false)}</select></div>
         </div>
@@ -397,27 +402,31 @@ async function loadCatalogList() {
 
   const { data: sections } = await sb.from('drug_sections').select('*').order('name');
   const { data: links } = await sb.from('drug_catalog_sections').select('*');
-  const sectionsByDrug = {};
-  (links || []).forEach(l => { (sectionsByDrug[l.drug_catalog_id] ??= new Set()).add(l.section_id); });
+  const secName = Object.fromEntries((sections || []).map(x => [x.id, x.name]));
+  const tagsByDrug = {};
+  (links || []).forEach(l => { (tagsByDrug[l.drug_catalog_id] ??= []).push(l.section_id); });
 
-  el.innerHTML = `<table><thead><tr><th>Medicine</th><th class="muted">Pack size</th><th>Sections</th><th></th></tr></thead><tbody>
-    ${data.map(d => `<tr style="${d.hidden ? 'opacity:.6;' : ''}">
+  const q = (document.getElementById('cat-search')?.value || '').trim().toLowerCase();
+  const cf = document.getElementById('cat-class-filter')?.value || '';
+  const shown = data.filter(d => (!q || d.medicine_name.toLowerCase().includes(q)) &&
+    (!cf || (cf === 'none' ? !(tagsByDrug[d.id] || []).length : (tagsByDrug[d.id] || []).includes(cf))));
+
+  el.innerHTML = `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+      <input type="text" id="cat-search" placeholder="Search the catalogue\u2026" value="${esc(q)}" style="max-width:260px;" />
+      <select id="cat-class-filter" style="max-width:220px;"><option value="">All classes</option>
+        ${(sections || []).map(x => `<option value="${x.id}" ${cf === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="none" ${cf === 'none' ? 'selected' : ''}>No class</option></select>
+      <span class="muted" style="font-size:12.5px;">${shown.length} of ${data.length} drug${data.length === 1 ? '' : 's'}</span></div>
+    <table><thead><tr><th>Medicine</th><th class="muted">Pack size</th><th>Class</th><th></th></tr></thead><tbody>
+    ${shown.map(d => `<tr style="${d.hidden ? 'opacity:.6;' : ''}">
       <td>${esc(d.medicine_name)}${d.hidden ? ' <span class="muted" style="font-size:12px;">(hidden)</span>' : ''}</td>
       <td class="muted">${esc(d.pack_size || '\u2014')}</td>
-      <td>${(sections || []).length ? (sections || []).map(s => `<label style="display:inline-flex; align-items:center; gap:4px; font-weight:400; margin-right:10px;"><input type="checkbox" class="section-tag-cb" data-drug="${d.id}" data-section="${s.id}" ${sectionsByDrug[d.id]?.has(s.id) ? 'checked' : ''} style="width:auto;" />${esc(s.name)}</label>`).join('') : '<span class="muted">No sections defined yet</span>'}</td>
+      <td>${(tagsByDrug[d.id] || []).map(id => `<span class="capsule" style="margin-right:4px;">${esc(secName[id] || '')}</span>`).join('') || '<span class="muted">\u2014</span>'}</td>
       <td style="text-align:right; white-space:nowrap;"><button class="btn small" data-hide="${d.id}" data-to="${d.hidden ? 'false' : 'true'}">${d.hidden ? 'Unhide' : 'Hide'}</button>${isDeveloper() ? ` <button class="btn small danger" data-delete="${d.id}" data-name="${esc(d.medicine_name)}">Remove</button>` : ''}</td>
     </tr>`).join('')}
-  </tbody></table>`;
-
-  el.querySelectorAll('.section-tag-cb').forEach(cb => cb.onchange = async () => {
-    if (cb.checked) {
-      const { error: e } = await sb.from('drug_catalog_sections').insert({ drug_catalog_id: cb.dataset.drug, section_id: cb.dataset.section });
-      if (e) { toast(e.message, true); cb.checked = false; return; }
-    } else {
-      const { error: e } = await sb.from('drug_catalog_sections').delete().eq('drug_catalog_id', cb.dataset.drug).eq('section_id', cb.dataset.section);
-      if (e) { toast(e.message, true); cb.checked = true; return; }
-    }
-  });
+  </tbody></table>${!shown.length ? '<div class="empty">No drugs match.</div>' : ''}`;
+  const reload = () => { const cs = document.getElementById('cat-search'); const pos = cs.selectionStart; loadCatalogList().then(() => { const n = document.getElementById('cat-search'); n.focus(); n.setSelectionRange(pos, pos); }); };
+  document.getElementById('cat-search').oninput = reload;
+  document.getElementById('cat-class-filter').onchange = () => loadCatalogList();
 
   el.querySelectorAll('[data-hide]').forEach(b => b.onclick = async () => {
     const { error: e } = await sb.rpc('set_drug_hidden', { p_id: b.dataset.hide, p_hidden: b.dataset.to === 'true' });

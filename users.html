@@ -156,6 +156,7 @@
           <div class="checklist">${siteWards.map(w => `<label><input type="checkbox" class="nu-ward-cb" value="${w.id}" ${checkedWards.has(w.id) ? 'checked' : ''}>${esc(w.name)}</label>`).join('') || '<span class="muted">No wards at this site.</span>'}</div>
         </div>`;
       }).join('');
+      wardPickerSetup(groupsEl, 'nu-ward-cb');
     };
     document.querySelectorAll('.nu-site-scope-cb').forEach(cb => cb.onchange = updateWardGroups);
   }
@@ -207,6 +208,7 @@
       <div class="checklist" style="max-height:140px;">${ws.map(w => `<label><input type="checkbox" class="iv-ward-cb" value="${w.id}">${esc(w.name)}</label>`).join('') || '<span class="muted">No wards at this site.</span>'}</div>
     </div>`;
   }).join('') || '<span class="muted">No wards available to you yet.</span>';
+  wardPickerSetup(document.getElementById('iv-wards'), 'iv-ward-cb');
 
   async function callInviteFn(payload) {
     const { data: { session: s } } = await sb.auth.getSession();
@@ -642,6 +644,7 @@
           <div class="checklist">${siteWards.map(w => `<label><input type="checkbox" class="ea-ward" value="${w.id}" ${checkedWards.has(w.id) ? 'checked' : ''}>${esc(w.name)}</label>`).join('') || '<span class="muted">No wards at this site.</span>'}</div>
         </div>`;
       }).join('');
+      wardPickerSetup(groupsEl, 'ea-ward');
     };
     const checkedWards = new Set(wardIds);
     panel.querySelectorAll('.ea-site-scope').forEach(cb => cb.onchange = updateWardGroups);

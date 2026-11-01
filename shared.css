@@ -924,3 +924,6 @@ html[data-motion="off"] header.topbar::before{ animation:none; }
 html[data-motion="off"] .sl-live i{ animation:none; }
 
 .u-susp{ flex:none; font-size:11.5px; font-weight:600; color:#9b1239; background:#fde8ee; border-radius:999px; padding:2px 9px; white-space:nowrap; }
+
+.wp-tools{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0; }
+.wp-tools .wp-search{ max-width:240px; }
