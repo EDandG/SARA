@@ -1,5 +1,5 @@
 // ============================================================
-// StockFlow — shared.js
+// StockFlow™ — shared.js
 // Loaded via a classic <script> tag by every page, after the Supabase
 // UMD script. Deliberately NOT an ES module — `import` from a CDN can
 // hang silently on restrictive/corporate networks with no console
@@ -21,7 +21,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 // ---------- ACCESSIBILITY SETTINGS (colour modes + animation) ----------
 // Stored per device in localStorage. Colour only: no layout or text-size changes.
 const A11Y_MODES = [
-  ['default', 'Standard', 'The normal StockFlow colours', ['#f0f4f5', '#003087', '#005eb8']],
+  ['default', 'Standard', 'The normal StockFlow™ colours', ['#f0f4f5', '#003087', '#005eb8']],
   ['bw', 'Black and white', 'Greyscale, no colour at all', ['#ffffff', '#000000', '#6b6b6b']],
   ['blue', 'Blue contrast', 'Pale blue background, deep blue text', ['#d6e6f8', '#00205b', '#005eb8']],
   ['beige', 'Beige contrast', 'Warm cream background, dark brown text', ['#f1e7cc', '#3a2f17', '#7a3e00']],
@@ -1020,7 +1020,7 @@ function startNewOrderPolling() {
     // does NOT check document.hidden — the whole point is to reach
     // someone who isn't currently looking at the tab.
     if (!document.hidden) toast(msg);
-    pushNotify('StockFlow', msg);
+    pushNotify('StockFlow™', msg);
   }, 45000);
 }
 
@@ -1164,7 +1164,7 @@ function buildSideNav() {
   const nav = document.createElement('nav');
   nav.id = 'sideNav'; nav.className = 'side-nav'; nav.setAttribute('aria-label', 'Main navigation');
   nav.innerHTML =
-    `<div class="sn-brand">StockFlow<small>by ED&amp;G™</small></div>` +
+    `<div class="sn-brand">StockFlow™<small>by ED&amp;G™</small></div>` +
     `<a href="home.html" class="sn-home"${currentHref === 'home.html' ? ' aria-current="page"' : ''}>${homeIcon}<span>Home</span></a>` +
     groups.map(g => `<hr><div class="sn-group">${iconFor[g] || ''}<span>${esc(labelFor[g] || g)}</span></div>` +
       links.filter(l => l.group === g).map(l => `<a class="sn-sub" href="${l.href}"${l.href === currentHref ? ' aria-current="page"' : ''}><span>${esc(l.label)}</span></a>`).join('')).join('');

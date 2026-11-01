@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>StockFlow — Stocklists</title>
+<title>StockFlow™ — Stocklists</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -17,7 +17,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">StockFlow</div>
+        <div class="name">StockFlow™</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -515,7 +515,7 @@ async function handleRestoreFile() {
   const norm = (k) => String(k).trim().toLowerCase();
   const pick = (r, ...names) => { for (const k of Object.keys(r)) if (names.includes(norm(k))) return r[k]; return ''; };
   if (!rows.length || !('medicine' in Object.fromEntries(Object.keys(rows[0]).map(k => [norm(k), 1])))) {
-    out.innerHTML = '<div class="empty">This does not look like a StockFlow backup — expected a sheet called “Stocklists” with columns Site, Ward, Medicine, Min qty, Max qty.</div>'; return;
+    out.innerHTML = '<div class="empty">This does not look like a StockFlow™ backup — expected a sheet called “Stocklists” with columns Site, Ward, Medicine, Min qty, Max qty.</div>'; return;
   }
 
   const catalogByLower = Object.fromEntries(catalog.map(c => [c.medicine_name.toLowerCase(), c.medicine_name]));
