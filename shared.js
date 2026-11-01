@@ -602,6 +602,164 @@ function renderSessionCard(session, allLines, nameById = {}) {
     </div>`;
 }
 
+
+function downloadMyStocklist() {
+  const list = myWards.slice().sort((a, c) => a.name.localeCompare(c.name, undefined, { numeric: true, sensitivity: 'base' }));
+  if (list.length === 1) return exportStocklistPdf(list[0].id);
+  openModal(`<h3>Download a stocklist</h3><p class="muted">Choose a ward.</p>
+    <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">${list.map(w => `<button class="btn ghost" data-dl-ward="${w.id}" style="text-align:left;">${esc(w.name)}</button>`).join('')}</div>
+    <div class="actions"><button class="btn ghost" id="dl-cancel">Close</button></div>`);
+  document.getElementById('dl-cancel').onclick = closeModal;
+  document.querySelectorAll('[data-dl-ward]').forEach(b => b.onclick = () => { closeModal(); exportStocklistPdf(b.dataset.dlWard); });
+}
+
+// ---------- Stocklist PDF (shared by the Stocklists page and every ward user's header button) ----------
+// jsPDF is loaded on demand on pages that don't already include it (same pinned version as the other pages).
+function ensureJsPdf() {
+  if (window.jspdf?.jsPDF) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/jspdf@4.2.1/dist/jspdf.umd.min.js';
+    s.onload = resolve; s.onerror = () => reject(new Error('Could not load the PDF library.'));
+    document.head.appendChild(s);
+  }).catch(e => { toast(e.message, true); throw e; });
+}
+
+// The Trust logo as a PNG on a white background, with its true proportions (SVGs without a
+// width/height are sized from their viewBox). Returns { data, w, h } or null.
+async function trustLogoPng() {
+  const url = String(systemSettings.trust_logo_data_url || '');
+  if (!/^data:image\/(svg\+xml|png|jpeg|gif|webp)[;,]/i.test(url)) return null;
+  try {
+    const img = await new Promise((resolve, reject) => { const im = new Image(); im.onload = () => resolve(im); im.onerror = reject; im.src = url; });
+    let w = img.naturalWidth, h = img.naturalHeight;
+    if (!w || !h) {
+      let txt = ''; try { txt = url.includes(';base64,') ? atob(url.split(',')[1]) : decodeURIComponent(url.split(',').slice(1).join(',')); } catch (e) {}
+      const vb = txt.match(/viewBox\s*=\s*["']\s*[-\d.]+[ ,]+[-\d.]+[ ,]+([\d.]+)[ ,]+([\d.]+)/i);
+      w = vb ? parseFloat(vb[1]) : 300; h = vb ? parseFloat(vb[2]) : 130;
+    }
+    const k = Math.min(1, 1200 / Math.max(w, h)) * (Math.max(w, h) < 600 ? 600 / Math.max(w, h) : 1);
+    const cw = Math.max(1, Math.round(w * k)), ch = Math.max(1, Math.round(h * k));
+    const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cw, ch); ctx.drawImage(img, 0, 0, cw, ch);
+    return { data: c.toDataURL('image/png'), w: cw, h: ch };
+  } catch (e) { return null; }
+}
+
+async function exportStocklistPdf(ward_id) {
+  if (!ward_id) return toast('Select a ward first.', true);
+  const ward = wards.find(w => w.id === ward_id);
+  const { data, error } = await sb.from('blist_items').select('*').eq('ward_id', ward_id).order('medicine_name');
+  if (error) return toast(error.message, true);
+  if (!data?.length) return toast('This ward has no stocklist to export yet.', true);
+
+  // Group by section — a drug flagged under more than one section
+  // (e.g. both "Cold store" and "Injections") appears under each,
+  // since a nurse needs to find it either way. Anything with no
+  // section goes under a plain "General" heading.
+  const names = data.map(d => d.medicine_name);
+  const { data: catalogRows } = await sb.from('drug_catalog').select('id, medicine_name').in('medicine_name', names);
+  const catalogIdByName = Object.fromEntries((catalogRows || []).map(c => [c.medicine_name, c.id]));
+  const catalogIds = (catalogRows || []).map(c => c.id);
+  const { data: links } = catalogIds.length
+    ? await sb.from('drug_catalog_sections').select('drug_catalog_id, section_id').in('drug_catalog_id', catalogIds)
+    : { data: [] };
+  const { data: sectionRows } = await sb.from('drug_sections').select('id, name');
+  const sectionNameById = Object.fromEntries((sectionRows || []).map(s => [s.id, s.name]));
+  const sectionsByCatalogId = {};
+  (links || []).forEach(l => { (sectionsByCatalogId[l.drug_catalog_id] ??= []).push(sectionNameById[l.section_id]); });
+
+  const groups = {};
+  data.forEach(item => {
+    const catalogId = catalogIdByName[item.medicine_name];
+    const itemSections = catalogId ? (sectionsByCatalogId[catalogId] || []) : [];
+    const targets = itemSections.length ? itemSections : ['General'];
+    targets.forEach(sec => { (groups[sec] ??= []).push(item); });
+  });
+  const sectionNames = Object.keys(groups).filter(s => s !== 'General').sort((a, b) => a.localeCompare(b));
+  if (groups['General']) sectionNames.push('General');
+
+  await ensureJsPdf();
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 40;
+  let y = margin;
+
+  // Trust logo, top-left, on a white ground. A logo that can't be read must never block the export.
+  const logoPng = await trustLogoPng();
+  if (logoPng) {
+    const boxW = 170, boxH = 64, scale = Math.min(boxW / logoPng.w, boxH / logoPng.h);
+    try { doc.addImage(logoPng.data, 'PNG', margin, y, logoPng.w * scale, logoPng.h * scale, undefined, 'FAST'); y += Math.max(40, logoPng.h * scale) + 28; } catch (e) { /* skip logo */ }
+  }
+
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+  doc.text(`${ward?.name || 'Ward'} \u2014 Stocklist`, margin, y);
+  y += 20;
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(100);
+  doc.text(`Exported: ${new Date().toLocaleString('en-GB')}`, margin, y);
+  doc.setTextColor(0);
+  y += 24;
+
+  const colX = { name: margin, min: pageWidth - margin - 160, max: pageWidth - margin - 70 };
+  const nameMaxWidth = colX.min - colX.name - 10;
+  const lineHeight = 13;
+  const minRowHeight = 20;
+  const drawColumnHeader = () => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+    doc.text('Medicine', colX.name, y);
+    doc.text('Min level', colX.min, y);
+    doc.text('Max level', colX.max, y);
+    y += 6;
+    doc.setLineWidth(0.5);
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 14;
+    doc.setFont('helvetica', 'normal');
+  };
+  const rowHeightFor = (item) => {
+    const nameLines = doc.splitTextToSize(item.medicine_name, nameMaxWidth);
+    return { nameLines, rowHeight: Math.max(minRowHeight, nameLines.length * lineHeight + 6) };
+  };
+  const drawRow = (item, i) => {
+    const { nameLines, rowHeight } = rowHeightFor(item);
+    if (y - 14 + rowHeight > pageHeight - margin) {
+      doc.addPage();
+      y = margin;
+      drawColumnHeader();
+    }
+    if (i % 2 === 1) { doc.setFillColor(246, 247, 249); doc.rect(margin - 4, y - 14, pageWidth - 2 * margin + 8, rowHeight, 'F'); }
+    doc.text(nameLines, colX.name, y);
+    doc.text(item.min_qty === null || item.min_qty === undefined ? '\u2014' : String(item.min_qty), colX.min, y);
+    doc.text(String(item.max_qty), colX.max, y);
+    y += rowHeight;
+  };
+
+  let firstSection = true;
+  sectionNames.forEach(secName => {
+    const items = groups[secName];
+    // Orphan control: a section heading needs room for itself, the
+    // column header, and at least one row beneath it — otherwise it
+    // starts the new page instead of sitting alone at the bottom.
+    const firstRow = rowHeightFor(items[0]).rowHeight;
+    const neededForHeading = 24 + 6 + 14 + firstRow;
+    if (!firstSection && y - 14 + neededForHeading > pageHeight - margin) {
+      doc.addPage();
+      y = margin;
+    }
+    if (!firstSection) y += 10;
+    firstSection = false;
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
+    doc.text(secName, margin, y);
+    y += 18;
+    drawColumnHeader();
+    items.forEach((item, i) => drawRow(item, i));
+  });
+
+  doc.save(`${(ward?.name || 'ward').replace(/[^a-z0-9]+/gi, '-')}-stocklist.pdf`);
+}
+
 // Puts the Trust logo (set by the Developer in System settings) at the left of
 // the header on every page. Shown on a white plate so any logo reads on navy.
 function applyTrustLogo() {
@@ -879,6 +1037,16 @@ async function requireAuth(options = {}) {
     b.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="4.5" r="1.8"/><path d="M5 8.5l7 1.5 7-1.5M12 10v4.5M9 21l3-6.5 3 6.5"/></svg>';
     b.onclick = openAccessibilitySettings;
     w.insertBefore(b, w.querySelector('[data-logout]') || null);
+  });
+  // Ward staff: download their ward's stocklist from any page.
+  document.querySelectorAll('header.topbar .who').forEach(w => {
+    if (!myWards.length || w.querySelector('[data-stocklist-dl]')) return;
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'a11y-btn'; b.setAttribute('data-stocklist-dl', '');
+    b.title = 'Download your ward\u2019s stocklist'; b.setAttribute('aria-label', 'Download stocklist');
+    b.style.cssText = 'width:auto; padding:0 12px; gap:6px; display:inline-flex; align-items:center; font-size:13px; font-weight:600;';
+    b.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></svg><span>Stocklist</span>';
+    b.onclick = downloadMyStocklist;
+    w.insertBefore(b, w.querySelector('[data-a11y]') || w.querySelector('[data-logout]') || null);
   });
   startIdleWatch();
   buildSideNav();

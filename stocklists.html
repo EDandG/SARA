@@ -68,7 +68,7 @@ async function loadBuilder(ward_id) {
   builderState = {};
   catalog.forEach(c => {
     const existing = currentByName[c.medicine_name];
-    builderState[c.medicine_name] = { checked: !!existing, min_qty: existing?.min_qty ?? '', max_qty: existing?.max_qty ?? 1 };
+    builderState[c.medicine_name] = { checked: !!existing, min_qty: existing ? (existing.min_qty ?? '') : 1, max_qty: existing?.max_qty ?? 1 };
   });
   builderChip = 'all'; builderView = 'all';
   const copySel = document.getElementById('builder-copy-ward');
@@ -315,133 +315,6 @@ async function publishFromBuilder() {
   });
 }
 
-async function exportStocklistPdf(ward_id) {
-  if (!ward_id) return toast('Select a ward first.', true);
-  const ward = wards.find(w => w.id === ward_id);
-  const { data, error } = await sb.from('blist_items').select('*').eq('ward_id', ward_id).order('medicine_name');
-  if (error) return toast(error.message, true);
-  if (!data?.length) return toast('This ward has no stocklist to export yet.', true);
-
-  // Group by section — a drug flagged under more than one section
-  // (e.g. both "Cold store" and "Injections") appears under each,
-  // since a nurse needs to find it either way. Anything with no
-  // section goes under a plain "General" heading.
-  const names = data.map(d => d.medicine_name);
-  const { data: catalogRows } = await sb.from('drug_catalog').select('id, medicine_name').in('medicine_name', names);
-  const catalogIdByName = Object.fromEntries((catalogRows || []).map(c => [c.medicine_name, c.id]));
-  const catalogIds = (catalogRows || []).map(c => c.id);
-  const { data: links } = catalogIds.length
-    ? await sb.from('drug_catalog_sections').select('drug_catalog_id, section_id').in('drug_catalog_id', catalogIds)
-    : { data: [] };
-  const { data: sectionRows } = await sb.from('drug_sections').select('id, name');
-  const sectionNameById = Object.fromEntries((sectionRows || []).map(s => [s.id, s.name]));
-  const sectionsByCatalogId = {};
-  (links || []).forEach(l => { (sectionsByCatalogId[l.drug_catalog_id] ??= []).push(sectionNameById[l.section_id]); });
-
-  const groups = {};
-  data.forEach(item => {
-    const catalogId = catalogIdByName[item.medicine_name];
-    const itemSections = catalogId ? (sectionsByCatalogId[catalogId] || []) : [];
-    const targets = itemSections.length ? itemSections : ['General'];
-    targets.forEach(sec => { (groups[sec] ??= []).push(item); });
-  });
-  const sectionNames = Object.keys(groups).filter(s => s !== 'General').sort((a, b) => a.localeCompare(b));
-  if (groups['General']) sectionNames.push('General');
-
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const margin = 40;
-  let y = margin;
-
-  if (systemSettings.trust_logo_data_url) {
-    try {
-      // Rasterise to PNG first: jsPDF can't embed SVG directly, and this
-      // also keeps the logo's own aspect ratio (fitted into a 140x60pt box).
-      const logo = await new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = reject;
-        img.src = systemSettings.trust_logo_data_url;
-      });
-      const nw = logo.naturalWidth || 300, nh = logo.naturalHeight || 130;
-      const boxW = 140, boxH = 60;
-      const scale = Math.min(boxW / nw, boxH / nh);
-      const w = nw * scale, h = nh * scale;
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(w * 4); canvas.height = Math.round(h * 4);
-      canvas.getContext('2d').drawImage(logo, 0, 0, canvas.width, canvas.height);
-      doc.addImage(canvas.toDataURL('image/png'), 'PNG', margin, y, w, h, undefined, 'FAST');
-    } catch (e) { /* a corrupt or unsupported image shouldn't block the export */ }
-    y += 70;
-  }
-
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
-  doc.text(`${ward?.name || 'Ward'} \u2014 Stocklist`, margin, y);
-  y += 20;
-  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(100);
-  doc.text(`Exported: ${new Date().toLocaleString('en-GB')}`, margin, y);
-  doc.setTextColor(0);
-  y += 24;
-
-  const colX = { name: margin, min: pageWidth - margin - 160, max: pageWidth - margin - 70 };
-  const nameMaxWidth = colX.min - colX.name - 10;
-  const lineHeight = 13;
-  const minRowHeight = 20;
-  const drawColumnHeader = () => {
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
-    doc.text('Medicine', colX.name, y);
-    doc.text('Min level', colX.min, y);
-    doc.text('Max level', colX.max, y);
-    y += 6;
-    doc.setLineWidth(0.5);
-    doc.line(margin, y, pageWidth - margin, y);
-    y += 14;
-    doc.setFont('helvetica', 'normal');
-  };
-  const rowHeightFor = (item) => {
-    const nameLines = doc.splitTextToSize(item.medicine_name, nameMaxWidth);
-    return { nameLines, rowHeight: Math.max(minRowHeight, nameLines.length * lineHeight + 6) };
-  };
-  const drawRow = (item, i) => {
-    const { nameLines, rowHeight } = rowHeightFor(item);
-    if (y - 14 + rowHeight > pageHeight - margin) {
-      doc.addPage();
-      y = margin;
-      drawColumnHeader();
-    }
-    if (i % 2 === 1) { doc.setFillColor(246, 247, 249); doc.rect(margin - 4, y - 14, pageWidth - 2 * margin + 8, rowHeight, 'F'); }
-    doc.text(nameLines, colX.name, y);
-    doc.text(item.min_qty === null || item.min_qty === undefined ? '\u2014' : String(item.min_qty), colX.min, y);
-    doc.text(String(item.max_qty), colX.max, y);
-    y += rowHeight;
-  };
-
-  let firstSection = true;
-  sectionNames.forEach(secName => {
-    const items = groups[secName];
-    // Orphan control: a section heading needs room for itself, the
-    // column header, and at least one row beneath it — otherwise it
-    // starts the new page instead of sitting alone at the bottom.
-    const firstRow = rowHeightFor(items[0]).rowHeight;
-    const neededForHeading = 24 + 6 + 14 + firstRow;
-    if (!firstSection && y - 14 + neededForHeading > pageHeight - margin) {
-      doc.addPage();
-      y = margin;
-    }
-    if (!firstSection) y += 10;
-    firstSection = false;
-
-    doc.setFont('helvetica', 'bold'); doc.setFontSize(13);
-    doc.text(secName, margin, y);
-    y += 18;
-    drawColumnHeader();
-    items.forEach((item, i) => drawRow(item, i));
-  });
-
-  doc.save(`${(ward?.name || 'ward').replace(/[^a-z0-9]+/gi, '-')}-stocklist.pdf`);
-}
 
 
 async function loadStockVersions() {
@@ -708,7 +581,8 @@ async function renderAdminStock() {
   body.innerHTML = `
     <div class="card">
       <h2>Ward</h2>
-      <div class="row"><div><label>Ward</label><select id="stock-ward">${groupedWardOptions}</select></div></div>
+      <div class="row"><div><label>Ward</label><select id="stock-ward">${groupedWardOptions}</select></div>
+        <div style="align-self:flex-end;"><button class="btn ghost" id="export-pdf-btn">Export as PDF</button></div></div>
     </div>
     <div class="card">
       <h2>Build stocklist from catalog</h2>
@@ -722,11 +596,10 @@ async function renderAdminStock() {
     <div class="card"><h2>Current stocklist</h2>
       <div class="row" style="margin-bottom:12px;">
         <div><label>Add a drug to this ward</label><select id="add-drug-name">${catalogOptionHtml()}</select></div>
-        <div><label>Min qty</label><input type="number" min="0" id="add-drug-minqty" placeholder="\u2014" style="max-width:100px;" /></div>
+        <div><label>Min qty</label><input type="number" min="0" id="add-drug-minqty" value="1" style="max-width:100px;" /></div>
         <div><label>Max qty</label><input type="number" min="1" id="add-drug-maxqty" value="1" style="max-width:100px;" /></div>
         <div style="align-self:flex-end;"><button class="btn magenta small" id="add-drug-btn">Add to this ward</button></div>
       </div>
-      <div style="margin-bottom:12px;"><button class="btn ghost small" id="export-pdf-btn">Export as PDF</button></div>
       <div id="stock-list">Loading\u2026</div>
     </div>
     <div class="card">
@@ -734,7 +607,7 @@ async function renderAdminStock() {
       <p class="muted">For a drug already in the catalog \u2014 adds it to every active ward's stocklist at once, at the max quantity given, skipping any ward that already stocks it. Individual wards can still be adjusted afterwards from the list above.</p>
       <div class="row">
         <div><label>Medicine</label><select id="bulk-add-name">${catalogOptionHtml()}</select></div>
-        <div><label>Min qty</label><input type="number" min="0" id="bulk-add-minqty" placeholder="\u2014" style="max-width:100px;" /></div>
+        <div><label>Min qty</label><input type="number" min="0" id="bulk-add-minqty" value="1" style="max-width:100px;" /></div>
         <div><label>Max qty</label><input type="number" min="1" id="bulk-add-maxqty" value="1" style="max-width:100px;" /></div>
         <div style="align-self:flex-end;"><button class="btn magenta small" id="bulk-add-btn">Add to all wards</button></div>
       </div>
@@ -784,7 +657,7 @@ async function renderAdminStock() {
         const { error: insErr } = await sb.from('blist_items').insert({ ward_id, medicine_name: name, min_qty: minQty, max_qty: maxQty });
         if (insErr) return toast(insErr.message.includes('duplicate') ? 'Already on this ward\u2019s stocklist.' : insErr.message, true);
         document.getElementById('add-drug-name').value = '';
-        document.getElementById('add-drug-minqty').value = '';
+        document.getElementById('add-drug-minqty').value = '1';
         document.getElementById('add-drug-maxqty').value = '1';
         toast(`${name} added to this ward\u2019s stocklist.`);
         loadStockList();
@@ -813,7 +686,7 @@ async function renderAdminStock() {
         const { error: insErr } = await sb.from('blist_items').insert(toInsert);
         if (insErr) return toast(insErr.message, true);
         document.getElementById('bulk-add-name').value = '';
-        document.getElementById('bulk-add-minqty').value = '';
+        document.getElementById('bulk-add-minqty').value = '1';
         document.getElementById('bulk-add-maxqty').value = '1';
         toast(`${name} added to ${toInsert.length} ward${toInsert.length > 1 ? 's' : ''} (${existingIds.size} already had it).`);
         loadBulkRemoveOptions();
