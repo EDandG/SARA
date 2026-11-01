@@ -448,7 +448,7 @@ async function loadCatalogList() {
 }
 
 (async () => {
-  const p = await requireAuth({ require: () => isSuperuser() });
+  const p = await requireAuth({ require: () => canManageCatalogue() });
   if (!p) return;
   document.getElementById('main').innerHTML = '<div id="body"></div>';
   await renderDrugCatalog();

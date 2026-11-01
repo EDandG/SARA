@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Stock Req — Roles</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="roles.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">Stock Req</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+const slugRole = (n) => String(n || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+const RESERVED = ['developer', 'superuser', 'governance'];
+let roleRows = [], countByRole = {};
+
+function permBoxes(prefix, selected) {
+  return PERMISSION_DEFS.map(g => `
+    <div style="margin-top:10px;"><div style="font-weight:600; font-size:12.5px; color:var(--navy); margin-bottom:4px;">${esc(g.group)}</div>
+      <div class="perm-grid">${g.items.map(([k, label]) =>
+        `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="${prefix}" data-perm="${k}" style="width:auto;" ${selected && selected[k] ? 'checked' : ''}> ${esc(label)}</label></div>`).join('')}</div></div>`).join('');
+}
+const readBoxes = (prefix, root = document) => { const g = {}; root.querySelectorAll('.' + prefix).forEach(cb => { if (cb.checked) g[cb.dataset.perm] = true; }); return g; };
+
+async function renderRoles() {
+  const body = document.getElementById('body');
+  body.innerHTML = `
+    <div class="card">
+      <h2>Create a role</h2>
+      <p class="muted">A role is a named set of permissions. Only you can create or change roles. When someone is invited or given a login they are simply given a role &mdash; its permissions are applied automatically, so the people sending invites never tick individual boxes.</p>
+      <div class="row">
+        <div><label>Role name</label><input type="text" id="new-role-name" placeholder="e.g. Senior Pharmacist" /></div>
+        <div><label>Description <span class="muted" style="font-weight:400;">(optional)</span></label><input type="text" id="new-role-desc" placeholder="Who this role is for" /></div>
+      </div>
+      <div id="new-role-perms">${permBoxes('nr-perm', {})}</div>
+      <button class="btn magenta" style="margin-top:14px;" id="create-role-btn">Create role</button>
+    </div>
+    <div class="card"><h2>Roles</h2><div id="role-list">Loading…</div></div>`;
+
+  document.getElementById('create-role-btn').onclick = async () => {
+    const raw = document.getElementById('new-role-name').value.trim();
+    const name = slugRole(raw);
+    if (!name) return toast('Enter a role name.', true);
+    if (RESERVED.includes(name)) return toast('That name is reserved and can\'t be used as a role.', true);
+    const grants = readBoxes('nr-perm');
+    const description = document.getElementById('new-role-desc').value.trim() || null;
+    const { error } = await sb.from('titles').insert({ name, grants, description });
+    if (error) return toast(error.message.includes('duplicate') ? 'That role already exists.' : error.message, true);
+    toast('Role created.');
+    renderRoles();
+  };
+  await loadRoleList();
+}
+
+async function loadRoleList() {
+  const el = document.getElementById('role-list');
+  const { data, error } = await sb.from('titles').select('*').order('name');
+  if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  roleRows = data || [];
+  if (!roleRows.length) { el.innerHTML = `<div class="empty">No roles yet.</div>`; return; }
+  const { data: profileRows } = await sb.from('profiles').select('role');
+  countByRole = {};
+  (profileRows || []).forEach(p => { countByRole[p.role] = (countByRole[p.role] || 0) + 1; });
+
+  el.innerHTML = `<table><thead><tr><th>Role</th><th>Permissions</th><th>Accounts</th><th></th></tr></thead><tbody>
+    ${roleRows.map(t => {
+      const list = permSummary(t.grants);
+      return `<tr>
+        <td><b>${esc(roleLabel(t.name))}</b>${t.description ? `<div class="muted" style="font-size:11.5px;">${esc(t.description)}</div>` : ''}</td>
+        <td class="muted" style="font-size:12px;">${list.length ? list.map(esc).join(' · ') : 'None'}</td>
+        <td class="muted">${countByRole[t.name] || 0}</td>
+        <td style="text-align:right; white-space:nowrap;">
+          <button class="btn small ghost" data-edit="${t.id}">Edit</button>
+          <button class="btn small danger" data-delete="${t.id}">Delete</button>
+        </td></tr>`;
+    }).join('')}
+  </tbody></table>`;
+
+  el.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editRole(roleRows.find(r => r.id === b.dataset.edit)));
+  el.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => {
+    const t = roleRows.find(r => r.id === b.dataset.delete);
+    const inUse = countByRole[t.name] || 0;
+    if (inUse > 0) return toast(`${inUse} account${inUse > 1 ? 's' : ''} still ${inUse > 1 ? 'hold' : 'holds'} this role — give them another role first.`, true);
+    confirmDialog('Delete this role?', `"${esc(roleLabel(t.name))}" isn\'t used by any account, so this is safe to remove.`, 'Delete', async () => {
+      const { error: e } = await sb.from('titles').delete().eq('id', t.id);
+      if (e) return toast(e.message, true);
+      toast('Role deleted.');
+      loadRoleList();
+    }, true);
+  });
+}
+
+function editRole(t) {
+  const holders = countByRole[t.name] || 0;
+  openModal(`<h3>Edit role</h3>
+    <div class="row">
+      <div><label>Role name</label><input type="text" id="er-name" value="${esc(t.name)}" /></div>
+      <div><label>Description</label><input type="text" id="er-desc" value="${esc(t.description || '')}" /></div>
+    </div>
+    <div style="max-height:46vh; overflow:auto; margin-top:6px;">${permBoxes('er-perm', t.grants)}</div>
+    <p class="muted" style="margin-top:10px; font-size:11.5px;">Saving updates ${holders ? `the ${holders} account${holders > 1 ? 's' : ''} holding this role` : 'any account that later holds this role'} straight away.</p>
+    <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="er-save">Save</button></div>`);
+  document.getElementById('er-save').onclick = async () => {
+    const newName = slugRole(document.getElementById('er-name').value);
+    if (!newName) return toast('Enter a role name.', true);
+    if (RESERVED.includes(newName)) return toast('That name is reserved.', true);
+    const grants = readBoxes('er-perm', document.getElementById('modal-root'));
+    const description = document.getElementById('er-desc').value.trim() || null;
+    const { error } = await sb.from('titles').update({ name: newName, grants, description }).eq('id', t.id);
+    if (error) { closeModal(); return toast(error.message.includes('duplicate') ? 'A role with that name already exists.' : error.message, true); }
+    // renaming moves the accounts across; the database re-applies the role's permissions as it does
+    if (newName !== t.name) {
+      const { error: pe } = await sb.from('profiles').update({ role: newName }).eq('role', t.name);
+      if (pe) { closeModal(); return toast(`Role saved, but moving its accounts to the new name failed: ${pe.message}`, true); }
+    } else if (holders) {
+      const { error: re } = await sb.rpc('apply_role_to_holders', { p_role: newName });
+      if (re) { closeModal(); return toast(`Role saved, but updating its accounts failed: ${re.message}`, true); }
+    }
+    closeModal();
+    toast('Role saved.');
+    loadRoleList();
+  };
+}
+
+(async () => {
+  const p = await requireAuth({ require: () => isDeveloper() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = '<div id="body"></div>';
+  renderRoles();
+})();
+</script>
+</body>
+</html>

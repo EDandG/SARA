@@ -46,26 +46,31 @@
   }
   const wardsForForm = (isAdminRole()) ? wards.filter(w => scopeSiteIds.includes(w.site_id)) : wards;
 
-  const { data: titleRows } = await sb.from('titles').select('name').order('name');
-  let roleOptions = (titleRows || []).map(t => t.name);
-  if (isDeveloper()) roleOptions = [...roleOptions, 'governance', 'superuser'];
-  else if (isSuperuser()) roleOptions = [...roleOptions, 'governance'];
-  // A title is just a label now — it grants nothing on its own, so
-  // every tickbox below is offered regardless of which one is chosen.
-  // The backend enforces who can actually be seen or managed; this is
-  // only a display narrowing on top of that.
-  const visibleFilter = isSuperuser() ? () => true : (u) => !['developer', 'superuser', 'governance'].includes(u.role);
+  const { data: titleRows } = await sb.from('titles').select('name, grants, description').order('name');
+  const roleGrants = {};
+  (titleRows || []).forEach(t => { roleGrants[t.name] = t.grants || {}; });
+  // A role carries its permissions. Non-Developers can only hand out a role whose
+  // permissions they hold themselves (the server checks this too).
+  let roleOptions = (titleRows || []).map(t => t.name)
+    .filter(n => isDeveloper() || Object.keys(roleGrants[n]).every(k => !roleGrants[n][k] || profile?.[k]));
+  if (isDeveloper()) roleOptions = [...roleOptions, 'governance'];
+  const roleInfoHtml = (r) => {
+    if (r === 'governance') return 'Read-only access to the audit trail.';
+    const list = permSummary(roleGrants[r]);
+    return list.length ? 'This role can: ' + list.map(esc).join(' \u00b7 ') : 'This role has no permissions yet.';
+  };
+  const visibleFilter = isSuperuser() ? () => true : (u) => !['developer', 'governance'].includes(u.role);
 
   body.innerHTML = `
     <div class="card">
       <h2>Invite by email</h2>
-      <p class="muted">Set up a group once: choose the title, tick the permissions and pick the wards, then paste their email addresses. Each person gets a personal link and only has to enter their name and choose a password &mdash; their access is already in place. Send a different group by changing the settings and sending again.</p>
+      <p class="muted">Set up a group once: choose the role and pick the wards, then paste their email addresses. The role decides what they can do. Each person gets a personal link and only has to enter their name and choose a password &mdash; their access is already in place. Send a different group by changing the settings and sending again.</p>
       <label>Email addresses <span class="muted" style="font-weight:400;">(one per line, or separated by commas)</span></label>
       <textarea id="iv-emails" rows="4" spellcheck="false" style="width:100%; padding:9px 10px; border:1px solid var(--border); border-radius:6px; font:inherit; font-size:14px;" placeholder="name@example.nhs.uk"></textarea>
       <div class="row" style="margin-top:10px;">
-        <div><label>Title <span class="muted" style="font-weight:400;">(a label only)</span></label><select id="iv-role">${roleOptions.map(r => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select></div>
+        <div><label>Role</label><select id="iv-role">${roleOptions.map(r => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select></div>
       </div>
-      <div style="margin-top:10px;"><label>Permissions</label><div class="perm-grid" id="iv-perms"></div></div>
+      <p class="muted" id="iv-role-info" style="margin-top:6px; font-size:12px;"></p>
       <div style="margin-top:10px;"><label>Wards <span class="muted" style="font-weight:400;">(ward access they will have from day one)</span></label><div id="iv-wards"></div></div>
       <div style="margin-top:10px;"><label>Site access <span class="muted" style="font-weight:400;">(only needed for approving orders or managing users, stocklists or wards)</span></label>
         <div class="checklist">${sites.map(s => `<label><input type="checkbox" class="iv-site-cb" value="${s.id}">${esc(s.name)}</label>`).join('') || '<span class="muted">No sites yet.</span>'}</div></div>
@@ -88,8 +93,9 @@
       </div>
       <p class="muted" style="margin-top:6px; font-size:11.5px;">New logins start inactive and must change their passcode on first login — activate them from the list below once set up.</p>
       <div class="row" style="margin-top:10px;">
-        <div><label>Title <span class="muted" style="font-weight:400;">(a label only — tick whatever this account actually needs below)</span></label><select id="nu-role">${roleOptions.map(r => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select></div>
+        <div><label>Role</label><select id="nu-role">${roleOptions.map(r => `<option value="${r}">${roleLabel(r)}</option>`).join('')}</select></div>
       </div>
+      <p class="muted" id="nu-role-info" style="margin-top:6px; font-size:12px;"></p>
       <div id="nu-clinical-fields"></div>
       <div id="nu-site-fields"></div>
       <button class="btn magenta" style="margin-top:14px;" id="create-user-btn">Create login</button>
@@ -108,21 +114,6 @@
     const siteWrap = document.getElementById('nu-site-fields');
 
     clinicalWrap.innerHTML = `
-      <div class="perm-grid">
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-order" style="width:auto;"> Order stock</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-process" style="width:auto;"> Process stock</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-check-picking" style="width:auto;"> Can check picked requests</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-dashboard" style="width:auto;"> Can see the daily dashboard</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-nonurgent" style="width:auto;"> Can mark non-urgent</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-freetext" style="width:auto;"> Temp stock (order any catalog drug)</label></div>
-      </div>
-      <div class="perm-grid">
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-manage-users" style="width:auto;"> Manage users (site-scoped)</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-manage-ward-staff" style="width:auto;"> Manage ward staff (ward-scoped)</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-manage-stocklists" style="width:auto;"> Manage stocklists</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-manage-wards-sites" style="width:auto;"> Manage wards &amp; sites</label></div>
-        ${isDeveloper() ? `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-view-bi" style="width:auto;"> Business Intelligence access</label></div>` : ''}
-      </div>
       <div style="margin-top:10px;">
         <label>Sites (tick one or more to reveal their wards below)</label>
         <div class="checklist">${formSites.map(s => `<label><input type="checkbox" class="nu-site-scope-cb" value="${s.id}">${esc(s.name)}</label>`).join('') || '<span class="muted">No sites available to you yet.</span>'}</div>
@@ -133,12 +124,7 @@
       </div>`;
     siteWrap.innerHTML = `
       <div style="margin-top:10px;">
-        <label>Approval access <span class="muted" style="font-weight:400;">(which sites this login can approve above-max or restricted-reorder requests for — independent of their own ward access; requires "Approve orders" to actually be ticked below)</span></label>
-        <div class="checklist">${sites.map(s => `<label><input type="checkbox" class="nu-approval-site-cb" value="${s.id}">${esc(s.name)}</label>`).join('') || '<span class="muted">No sites yet.</span>'}</div>
-      </div>
-      <div style="margin-top:6px;"><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="nu-can-approve" style="width:auto;"> Approve orders</label></div>
-      <div style="margin-top:10px;">
-        <label>Site access <span class="muted" style="font-weight:400;">(for Manage users / Manage stocklists / Manage wards &amp; sites — which sites this login can manage)</span></label>
+        <label>Site access <span class="muted" style="font-weight:400;">(the sites this login can reach \u2014 needed for approving orders or managing users, stocklists or wards)</span></label>
         <div class="checklist">${sites.map(s => `<label><input type="checkbox" class="nu-site-cb" value="${s.id}">${esc(s.name)}</label>`).join('') || '<span class="muted">No sites yet.</span>'}</div>
       </div>`;
 
@@ -161,46 +147,9 @@
     document.querySelectorAll('.nu-site-scope-cb').forEach(cb => cb.onchange = updateWardGroups);
   }
 
-  // The database refuses these anyway (profiles permission trigger); greying
-  // the boxes out just stops people trying. You can't change your own
-  // permissions, and can only switch ON what you hold yourself.
-  const GRANT_IDS = { 'order': 'can_order', 'process': 'can_process', 'check-picking': 'can_check_picking',
-    'dashboard': 'can_view_dashboard', 'nonurgent': 'can_mark_nonurgent', 'freetext': 'can_freetext_temp_stock',
-    'manage-users': 'can_manage_users', 'manage-ward-staff': 'can_manage_ward_staff',
-    'manage-stocklists': 'can_manage_stocklists', 'manage-wards-sites': 'can_manage_wards_sites', 'approve': 'can_approve_orders' };
-  const MANAGEMENT_FLAGS = ['can_manage_users', 'can_manage_ward_staff', 'can_manage_stocklists', 'can_manage_wards_sites'];
-  function limitGrantBoxes(root, isSelf) {
-    if (isSuperuser()) return;
-    root.querySelectorAll('input[type=checkbox]').forEach(cb => {
-      let flag = cb.dataset.perm;
-      if (!flag) { const m = /^(?:ea-|nu-can-)(.+)$/.exec(cb.id || ''); flag = m && GRANT_IDS[m[1]]; }
-      if (!flag) return;
-      const hideIt = () => { const l = cb.closest('label') || cb.parentElement; if (l) l.style.display = 'none'; };
-      if (MANAGEMENT_FLAGS.includes(flag)) {
-        if (!cb.checked) { hideIt(); return; } // not theirs to give, so don't show it
-        cb.disabled = true;
-        cb.title = 'Only a Superuser or Developer can give or change management permissions.';
-      } else if (!isSelf && !profile?.[flag] && !cb.checked) {
-        hideIt();
-      } else if (isSelf || !profile?.[flag]) {
-        cb.disabled = true;
-        cb.title = isSelf ? "You can't change your own permissions." : 'You can only grant permissions you hold yourself.';
-      }
-    });
-  }
-
-  // ---------- Invite by email ----------
-  const IV_PERMS = [
-    ['can_order', 'Order stock'], ['can_process', 'Process stock'], ['can_check_picking', 'Check picked requests'],
-    ['can_view_dashboard', 'See the daily dashboard'], ['can_mark_nonurgent', 'Mark non-urgent'], ['can_freetext_temp_stock', 'Temp stock (order any catalog drug)'],
-    ['can_approve_orders', 'Approve orders'], ['can_manage_users', 'Manage users'],
-    ['can_manage_ward_staff', 'Manage ward staff'], ['can_manage_stocklists', 'Manage stocklists'],
-    ['can_manage_wards_sites', 'Manage wards & sites'],
-    ...(isDeveloper() ? [['can_view_bi', 'Business Intelligence access']] : []),
-  ];
-  document.getElementById('iv-perms').innerHTML = IV_PERMS.map(([k, label]) =>
-    `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400; margin:3px 0;"><input type="checkbox" class="iv-perm" data-perm="${k}" style="width:auto;"> ${esc(label)}</label></div>`).join('');
-  limitGrantBoxes(document, false);  // create-login form and invite tickboxes
+  const showRoleInfo = (selId, infoId) => { const el = document.getElementById(infoId); if (el) el.textContent = ''; const r = document.getElementById(selId)?.value; if (el && r) el.innerHTML = roleInfoHtml(r); };
+  document.getElementById('iv-role').onchange = () => showRoleInfo('iv-role', 'iv-role-info');
+  showRoleInfo('iv-role', 'iv-role-info');
   document.getElementById('iv-wards').innerHTML = formSites.map(sv => {
     const ws = wardsForForm.filter(w => w.site_id === sv.id);
     return `<div style="margin-bottom:10px;">
@@ -251,16 +200,14 @@
   document.getElementById('iv-send').onclick = async () => {
     const emails = document.getElementById('iv-emails').value.split(/[\s,;]+/).map(x => x.trim()).filter(Boolean);
     if (!emails.length) return toast('Add at least one email address.', true);
-    const grants = {};
-    document.querySelectorAll('.iv-perm').forEach(cb => { if (cb.checked) grants[cb.dataset.perm] = true; });
     const ward_ids = [...document.querySelectorAll('.iv-ward-cb:checked')].map(c => c.value);
     const site_ids = [...document.querySelectorAll('.iv-site-cb:checked')].map(c => c.value);
     const role = document.getElementById('iv-role').value;
-    if (!Object.keys(grants).length && !confirm('No permissions are ticked, so these accounts won’t be able to do anything yet. Send anyway?')) return;
+    if (!role) return toast('Choose a role.', true);
     const btn = document.getElementById('iv-send');
     btn.disabled = true; btn.textContent = 'Sending…';
     try {
-      const out = await callInviteFn({ emails, role, grants, ward_ids, site_ids });
+      const out = await callInviteFn({ emails, role, ward_ids, site_ids });
       renderInviteResult(out);
       document.getElementById('iv-emails').value = '';
       loadInvitations();
@@ -282,7 +229,7 @@
       if (r.status === 'revoked') return '<span class="badge suspended">Revoked</span>';
       return expired ? '<span class="badge out_of_stock">Expired</span>' : '<span class="badge pending">Waiting</span>';
     };
-    el.innerHTML = `<table><thead><tr><th>Email</th><th>Title</th><th>Wards</th><th>Status</th><th>Sent</th><th>Expires</th><th></th></tr></thead><tbody>
+    el.innerHTML = `<table><thead><tr><th>Email</th><th>Role</th><th>Wards</th><th>Status</th><th>Sent</th><th>Expires</th><th></th></tr></thead><tbody>
       ${data.map(r => `<tr>
         <td>${esc(r.email || r.email_masked)}${r.email_error ? `<div class="attribution" style="color:var(--red);">Email not sent</div>` : ''}</td>
         <td>${esc(roleLabel(r.role))}</td>
@@ -312,8 +259,9 @@
   }
   loadInvitations();
 
-  document.getElementById('nu-role').onchange = renderRoleDependentFields;
+  document.getElementById('nu-role').onchange = () => { renderRoleDependentFields(); showRoleInfo('nu-role', 'nu-role-info'); };
   renderRoleDependentFields();
+  showRoleInfo('nu-role', 'nu-role-info');
 
   document.getElementById('nu-pass-toggle').onclick = () => {
     const input = document.getElementById('nu-pass');
@@ -362,21 +310,7 @@
     if (!user_id || !passcode) return toast('Fill in all fields.', true);
     if (passcode.length < 12) return toast('Passcode must be at least 12 characters.', true);
 
-    const payload = {
-      user_id, passcode, first_name, last_name, role,
-      can_order: document.getElementById('nu-can-order')?.checked || false,
-      can_process: document.getElementById('nu-can-process')?.checked || false,
-      can_check_picking: document.getElementById('nu-can-check-picking')?.checked || false,
-      can_view_dashboard: document.getElementById('nu-can-dashboard')?.checked || false,
-      can_mark_nonurgent: document.getElementById('nu-can-nonurgent')?.checked || false,
-      can_freetext_temp_stock: document.getElementById('nu-can-freetext')?.checked || false,
-      can_manage_users: document.getElementById('nu-can-manage-users')?.checked || false,
-      can_manage_ward_staff: document.getElementById('nu-can-manage-ward-staff')?.checked || false,
-      can_manage_stocklists: document.getElementById('nu-can-manage-stocklists')?.checked || false,
-      can_manage_wards_sites: document.getElementById('nu-can-manage-wards-sites')?.checked || false,
-      can_approve_orders: document.getElementById('nu-can-approve')?.checked || false,
-    };
-    if (isDeveloper()) payload.can_view_bi = document.getElementById('nu-can-view-bi')?.checked || false;
+    const payload = { user_id, passcode, first_name, last_name, role };
 
     document.querySelectorAll('.nu-ward-cb').forEach(cb => { if (cb.checked) formCheckedWards.add(cb.value); else formCheckedWards.delete(cb.value); });
     payload.ward_ids = [...formCheckedWards];
@@ -434,10 +368,10 @@
       u.can_order && 'Order', u.can_process && 'Process', u.can_check_picking && 'Checker', u.can_view_dashboard && 'Dashboard',
       u.can_approve_orders && 'Approve', u.can_mark_nonurgent && 'Non-urgent', u.can_manage_users && 'Manage users',
       u.can_manage_ward_staff && 'Manage ward staff', u.can_manage_stocklists && 'Stocklists', u.can_manage_wards_sites && 'Wards/sites',
-      u.can_view_bi && 'BI', u.can_post_banners && 'Banners', u.can_check_own_picking && 'Checks own work',
+      u.can_view_bi && 'BI', u.can_post_banners && 'Banners', u.can_manage_catalogue && 'Catalogue', u.can_manage_calendar && 'Calendar', u.can_view_logs && 'Logs', u.can_check_own_picking && 'Checks own work',
     ].filter(Boolean);
     const where = [wardsFor(u.id), sitesFor(u.id)].filter(t => t !== '\u2014').join(' / ') || '';
-    const canSusp = !(u.id === profile.id || (isSuperuserRole() && u.role === 'developer'));
+    const canSusp = u.id !== profile.id;
     const ini = (u.initials || (u.full_name || '?').split(/\s+/).map(w => w[0]).join('').slice(0, 2)).toUpperCase();
     return `<div class="u-item${u.active ? '' : ' u-off'}">
       <div class="u-head" data-access="${u.id}" role="button" tabindex="0" aria-expanded="false">
@@ -463,7 +397,7 @@
     </div>`;
   }
 
-  const roleRank = (r) => { const i = ['developer', 'superuser', 'governance'].indexOf(r); return i < 0 ? 99 : i; };
+  const roleRank = (r) => { const i = ['developer', 'governance'].indexOf(r); return i < 0 ? 99 : i; };
   function groupByTitle(list) {
     const roles = [...new Set(list.map(u => u.role))].sort((x, y) => roleRank(x) - roleRank(y) || roleLabel(x).localeCompare(roleLabel(y)));
     return roles.map(r => ({ role: r, users: list.filter(u => u.role === r) }));
@@ -606,32 +540,29 @@
     const optionSites = sites.filter(s => options.some(w => w.site_id === s.id));
     const currentWardSiteIds = [...new Set(wardIds.map(wid => options.find(w => w.id === wid)?.site_id).filter(Boolean))];
 
+    const { data: roleRows } = await sb.from('titles').select('name, grants').order('name');
+    const roleNames = (roleRows || []).map(t => t.name);
+    const roleList = roleNames.includes(u.role) || ['developer', 'governance'].includes(u.role) ? roleNames : [...roleNames, u.role];
+    const heldPerms = Object.keys(PERM_LABEL).filter(k => u[k]).map(k => PERM_LABEL[k]);
     panel.innerHTML = `
-      <div class="perm-grid">
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-order" style="width:auto;" ${u.can_order ? 'checked' : ''}> Order stock</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-process" style="width:auto;" ${u.can_process ? 'checked' : ''}> Process stock</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-check-picking" style="width:auto;" ${u.can_check_picking ? 'checked' : ''}> Can check picked requests</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-dashboard" style="width:auto;" ${u.can_view_dashboard ? 'checked' : ''}> Can see the daily dashboard</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-nonurgent" style="width:auto;" ${u.can_mark_nonurgent ? 'checked' : ''}> Can mark non-urgent</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-freetext" style="width:auto;" ${u.can_freetext_temp_stock ? 'checked' : ''}> Temp stock (order any catalog drug)</label></div>
+      <div style="margin-bottom:10px;">
+        <label>Role</label>
+        ${isDeveloper() && u.role !== 'developer' ? `<select id="ea-role" style="max-width:280px;">${[...roleList, ...(roleList.includes('governance') ? [] : ['governance'])].map(r => `<option value="${esc(r)}" ${r === u.role ? 'selected' : ''}>${esc(roleLabel(r))}</option>`).join('')}</select>
+          <p class="muted" style="margin:4px 0 0; font-size:11.5px;">Changing the role replaces this person's permissions with the new role's.</p>`
+          : `<div><b>${esc(roleLabel(u.role))}</b></div>`}
+        <p class="muted" style="margin:6px 0 0; font-size:12px;">${heldPerms.length ? 'Can: ' + heldPerms.map(esc).join(' \u00b7 ') : 'No permissions.'}</p>
       </div>
-      <div class="perm-grid">
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-manage-users" style="width:auto;" ${u.can_manage_users ? 'checked' : ''}> Manage users (site-scoped)</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-manage-ward-staff" style="width:auto;" ${u.can_manage_ward_staff ? 'checked' : ''}> Manage ward staff (ward-scoped)</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-manage-stocklists" style="width:auto;" ${u.can_manage_stocklists ? 'checked' : ''}> Manage stocklists</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-manage-wards-sites" style="width:auto;" ${u.can_manage_wards_sites ? 'checked' : ''}> Manage wards &amp; sites</label></div>
-        <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-approve" style="width:auto;" ${u.can_approve_orders ? 'checked' : ''}> Approve orders</label></div>
-        ${isSuperuser() ? `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-check-own" style="width:auto;" ${u.can_check_own_picking ? 'checked' : ''}> Can check their own work</label></div>` : ''}
-        ${isSuperuser() ? `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-post-banners" style="width:auto;" ${u.can_post_banners ? 'checked' : ''}> Can post banners</label></div>` : ''}
-        ${isDeveloper() ? `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-view-bi" style="width:auto;" ${u.can_view_bi ? 'checked' : ''}> Business Intelligence access</label></div>` : ''}
-      </div>
+      ${isDeveloper() && u.role !== 'developer' ? `<details style="margin-bottom:10px;"><summary class="muted" style="cursor:pointer; font-size:12px;">Individual permission overrides (Developer only)</summary>
+        <div class="perm-grid" style="margin-top:8px;">${PERMISSION_DEFS.flatMap(g => g.items).map(([k, label]) =>
+          `<div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="ea-perm" data-perm="${k}" style="width:auto;" ${u[k] ? 'checked' : ''}> ${esc(label)}</label></div>`).join('')}
+          <div><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ea-check-own" style="width:auto;" ${u.can_check_own_picking ? 'checked' : ''}> Can check their own work</label></div>
+        </div></details>` : ''}
       <label style="margin-top:10px;">Sites (tick one or more to reveal their wards below \u2014 also used as this login's reach for user/stocklist/ward/site management and order approval)</label>
       <div class="checklist">${optionSites.map(s => `<label><input type="checkbox" class="ea-site-scope" value="${s.id}" ${(currentWardSiteIds.includes(s.id) || currentSiteIds.includes(s.id)) ? 'checked' : ''}>${esc(s.name)}</label>`).join('') || '<span class="muted">No sites available.</span>'}</div>
       <label style="margin-top:10px;">Ward access</label>
       <div id="ea-ward-groups-${userId}"></div>
       <button class="btn magenta small" id="save-access-${userId}" style="margin-top:10px;">Save access</button>`;
 
-    limitGrantBoxes(panel, userId === profile?.id);
     const updateWardGroups = () => {
       panel.querySelectorAll('.ea-ward').forEach(cb => { if (cb.checked) checkedWards.add(cb.value); else checkedWards.delete(cb.value); });
       const tickedSites = [...panel.querySelectorAll('.ea-site-scope:checked')].map(c => c.value);
@@ -654,24 +585,15 @@
       panel.querySelectorAll('.ea-ward').forEach(cb => { if (cb.checked) checkedWards.add(cb.value); else checkedWards.delete(cb.value); });
       const newWardIds = [...checkedWards];
       const newSiteIds = [...panel.querySelectorAll('.ea-site-scope:checked')].map(c => c.value);
-      const updates = {
-        can_order: document.getElementById('ea-order').checked,
-        can_process: document.getElementById('ea-process').checked,
-        can_check_picking: document.getElementById('ea-check-picking').checked,
-        can_view_dashboard: document.getElementById('ea-dashboard').checked,
-        can_mark_nonurgent: document.getElementById('ea-nonurgent').checked,
-        can_freetext_temp_stock: document.getElementById('ea-freetext').checked,
-        can_manage_users: document.getElementById('ea-manage-users').checked,
-        can_manage_ward_staff: document.getElementById('ea-manage-ward-staff').checked,
-        can_manage_stocklists: document.getElementById('ea-manage-stocklists').checked,
-        can_manage_wards_sites: document.getElementById('ea-manage-wards-sites').checked,
-        can_approve_orders: document.getElementById('ea-approve').checked,
-      };
-      if (isSuperuser()) updates.can_check_own_picking = document.getElementById('ea-check-own').checked;
-      if (isSuperuser()) updates.can_post_banners = document.getElementById('ea-post-banners').checked;
-      if (isDeveloper()) updates.can_view_bi = document.getElementById('ea-view-bi').checked;
-      const { error: updErr } = await sb.from('profiles').update(updates).eq('id', userId);
-      if (updErr) return toast(updErr.message, true);
+      if (isDeveloper() && u.role !== 'developer') {
+        const updates = {};
+        panel.querySelectorAll('.ea-perm').forEach(cb => { updates[cb.dataset.perm] = cb.checked; });
+        updates.can_check_own_picking = document.getElementById('ea-check-own').checked;
+        const newRole = document.getElementById('ea-role')?.value;
+        if (newRole && newRole !== u.role) updates.role = newRole;   // the database re-applies the new role's permissions
+        const { error: updErr } = await sb.from('profiles').update(updates).eq('id', userId);
+        if (updErr) return toast(updErr.message, true);
+      }
       await sb.from('user_wards').delete().eq('user_id', userId);
       if (newWardIds.length) await sb.from('user_wards').insert(newWardIds.map(ward_id => ({ user_id: userId, ward_id })));
       await sb.from('user_sites').delete().eq('user_id', userId);
@@ -695,11 +617,11 @@ async function renderWardManagerNurseList() {
 
   const { data: shared } = await sb.from('profiles').select('*').in('id', nurseIds).order('full_name');
   const nurses = (shared || []).filter(u =>
-    !['developer', 'superuser', 'governance'].includes(u.role)
+    !['developer', 'governance'].includes(u.role)
     && !(u.can_manage_users || u.can_manage_ward_staff || u.can_manage_stocklists || u.can_manage_wards_sites || u.can_approve_orders)
   );
   body.innerHTML = `<div class="card"><h2>Ward staff in your ward(s)</h2>
-    <p class="muted">Deactivating here is one-way \u2014 reactivation needs a superuser or someone with Manage users access. Accounts with their own manager-level access aren't shown here.</p>
+    <p class="muted">Deactivating here is one-way \u2014 reactivation needs someone with Manage users access. Accounts with their own manager-level access aren't shown here.</p>
     ${!nurses?.length ? `<div class="empty">No one found.</div>` : `
     <table><thead><tr><th>Name</th><th>Status</th><th></th></tr></thead><tbody>
       ${nurses.map(n => `<tr>

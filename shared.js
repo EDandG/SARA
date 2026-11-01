@@ -79,23 +79,37 @@ function openAccessibilitySettings() {
 })();
 
 // ---------- ROLE MODEL ----------
-// Top tier is split into two: Developer (renamed from the original
-// single "superuser" role) and a new, lower Superuser tier beneath it.
-// isSuperuser() is kept as the name every existing check already calls
-// and REDEFINED to mean "top tier, either flavour" — same strategy as
-// schema.sql, for the same reason: minimises how many call sites need
-// individual review. isDeveloper()/isSuperuserRole() are the two new,
-// narrowly-named checks for the places that must tell the tiers apart
-// (see schema.sql's role-hierarchy patch for the full reasoning, plus
-// a real bug it caught: a helper with its own internal "superuser
-// bypasses everything" shortcut that silently extended to the new tier
-// too — worth remembering if adding new top-tier bypasses here).
-const ROLES = ['developer','superuser','admin','governance','ward_manager','dispensary_manager','bulk_admin','nurse','pharmacist','pharmacy_technician','clinical_assistant','bulk_assistant','lead_pharmacist'];
+// Only the Developer bypasses anything. Everyone else gets what their ROLE
+// carries: a role is a set of permission tickboxes made by the Developer
+// (Roles page) and copied onto the account when the role is given. Every
+// capability below is also enforced by row-level security in the database.
+// isSuperuser() keeps its old name (many call sites) but now means
+// Developer only.
+// Every permission a role can carry, grouped for the Roles page and the Users page.
+const PERMISSION_DEFS = [
+  { group: 'Ordering & processing', items: [
+    ['can_order', 'Order stock'], ['can_process', 'Process stock'], ['can_check_picking', 'Check picked requests'],
+    ['can_approve_orders', 'Approve orders'], ['can_mark_nonurgent', 'Mark non-urgent'],
+    ['can_freetext_temp_stock', 'Temp stock (order any catalogue drug)'] ] },
+  { group: 'People', items: [
+    ['can_manage_users', 'Manage users (within their sites)'],
+    ['can_manage_ward_staff', 'Manage ward staff (deactivate only, within their wards)'] ] },
+  { group: 'Setup', items: [
+    ['can_manage_wards_sites', 'Add, rename and suspend wards & sites'], ['can_manage_stocklists', 'Manage stocklists'],
+    ['can_manage_catalogue', 'Manage the drug catalogue & classes'], ['can_manage_calendar', 'Manage bank holidays & cut-off times'],
+    ['can_post_banners', 'Post banners'] ] },
+  { group: 'Insight & oversight', items: [
+    ['can_view_dashboard', 'See the daily dashboard'], ['can_view_logs', 'View logs, active sessions & the audit trail'],
+    ['can_view_bi', 'Business Intelligence access'] ] },
+];
+const PERM_LABEL = Object.fromEntries(PERMISSION_DEFS.flatMap(g => g.items));
+const permSummary = (grants) => Object.keys(grants || {}).filter(k => grants[k] && PERM_LABEL[k]).map(k => PERM_LABEL[k]);
+const ROLES = ['developer','admin','governance','ward_manager','dispensary_manager','bulk_admin','nurse','pharmacist','pharmacy_technician','clinical_assistant','bulk_assistant','lead_pharmacist'];
 const CLINICAL_ROLES = ['nurse','pharmacist','pharmacy_technician','clinical_assistant','bulk_assistant','lead_pharmacist'];
 const WARD_SCOPED_ROLES = [...CLINICAL_ROLES, 'ward_manager'];
 const MANAGER_TYPES = ['admin','ward_manager','dispensary_manager','bulk_admin'];
 const ROLE_LABEL = {
-  developer:'Developer', superuser:'Superuser', admin:'Admin', governance:'Governance',
+  developer:'Developer', admin:'Admin', governance:'Governance',
   ward_manager:'Ward Manager', dispensary_manager:'Dispensary Manager', bulk_admin:'Bulk Admin',
   nurse:'Nurse', pharmacist:'Pharmacist', pharmacy_technician:'Pharmacy Technician',
   clinical_assistant:'Clinical Assistant', bulk_assistant:'Bulk Assistant', lead_pharmacist:'Lead Pharmacist',
@@ -114,12 +128,13 @@ let notifyPollTimer = null;
 let lastSeenOrdersAt = null;
 
 const isDeveloper = () => profile?.role === 'developer';
-const isSuperuserRole = () => profile?.role === 'superuser';
-const isSuperuser  = () => isDeveloper() || isSuperuserRole(); // top tier, either flavour — see note above
+const isSuperuserRole = () => false; // retired — there is no Superuser role any more
+const isSuperuser  = () => isDeveloper(); // Developer only — kept as a name for the existing call sites
+const hasPerm = (key) => isDeveloper() || !!profile?.[key];
 // These keep their old names so every existing call site picks up the
 // new meaning automatically — same approach as the backend functions
-// they mirror. Titles carry no capability; every one of these is now
-// a tickbox on the account, independent of what it's called.
+// they mirror. Every one of these is a tickbox on the account, copied
+// from the person's role (set by the Developer on the Roles page).
 const canPostBanners = () => isSuperuser() || !!profile?.can_post_banners;
 const isAdminRole  = () => !!profile?.can_manage_users;
 const isWardManager = () => !!profile?.can_manage_ward_staff;
@@ -127,6 +142,7 @@ const isDispensaryManager = () => !!profile?.can_manage_users;
 const isBulkAdmin = () => !!profile?.can_manage_users;
 const isAnyManagerType = () => isSuperuser() || isAdminRole() || isWardManager();
 const canCreateUsers = () => isSuperuser() || isAdminRole();
+const canSeeAudit = () => profile?.role === 'governance' || canViewLogs();
 const isManager    = () => isAnyManagerType();
 const isGovernance = () => profile?.role === 'governance';
 const canOrder      = () => !!profile?.can_order;
@@ -150,6 +166,9 @@ const canApproveOrders = () => isSuperuser() || !!profile?.can_approve_orders;
 const canMarkNonUrgent = () => isSuperuser() || !!profile?.can_mark_nonurgent;
 const canManageStocklists = () => isSuperuser() || !!profile?.can_manage_stocklists;
 const canManageWardsSites = () => isSuperuser() || !!profile?.can_manage_wards_sites;
+const canManageCatalogue = () => hasPerm('can_manage_catalogue');
+const canManageCalendar = () => hasPerm('can_manage_calendar');
+const canViewLogs = () => hasPerm('can_view_logs');
 const canViewBi = () => isSuperuser() || !!profile?.can_view_bi;
 const canViewDashboard = () => isSuperuser() || !!profile?.can_view_dashboard;
 // Paid features: hidden from everyone until a Developer switches them on in System settings.
@@ -1015,37 +1034,27 @@ function buildNavLinks() {
   if (canApproveOrders()) {
     links.push({ href: 'approvals.html', label: 'Above max stock waiting for approval', group: 'Above max stock waiting for approval' });
   }
-  if (isSuperuser()) {
+  // Each Admin link is its own permission (the Developer holds them all).
+  if (canManageWardsSites()) {
     links.push({ href: 'sites.html', label: 'Sites', group: 'Admin' });
     links.push({ href: 'wards.html', label: 'Wards', group: 'Admin' });
-    links.push({ href: 'users.html', label: 'Users', group: 'Admin' });
-    if (isDeveloper()) links.push({ href: 'titles.html', label: 'Titles', group: 'Admin' });
-    links.push({ href: 'drug-catalog.html', label: 'Drug Catalog', group: 'Admin' });
-    links.push({ href: 'stocklists.html', label: 'Stocklists', group: 'Admin' });
-    links.push({ href: 'active-sessions.html', label: 'Active sessions', group: 'Admin' });
-    links.push({ href: 'bank-holidays.html', label: 'Bank holidays', group: 'Admin' });
-    links.push({ href: 'system-settings.html', label: 'System settings', group: 'Admin' });
-    links.push({ href: 'logs.html', label: 'Logs', group: 'Admin' });
-    links.push({ href: 'audit.html', label: 'Audit', group: 'Governance' });
-  } else {
-    // Below the two fixed top tiers, every one of these is its own
-    // tickbox — an account can hold any combination, so each link is
-    // gated independently rather than bundled behind one manager check.
-    if (canManageWardsSites()) {
-      links.push({ href: 'sites.html', label: 'Sites', group: 'Admin' });
-      links.push({ href: 'wards.html', label: 'Wards', group: 'Admin' });
-    }
-    if (isAnyManagerType()) links.push({ href: 'users.html', label: 'Users', group: 'Admin' });
-    if (canManageStocklists()) links.push({ href: 'stocklists.html', label: 'Stocklists', group: 'Admin' });
-    if (isAdminRole()) links.push({ href: 'topup-days.html', label: 'Top-up days', group: 'Admin' });
   }
+  if (isAnyManagerType()) links.push({ href: 'users.html', label: 'Users', group: 'Admin' });
+  if (isDeveloper()) links.push({ href: 'roles.html', label: 'Roles', group: 'Admin' });
+  if (canManageCatalogue()) links.push({ href: 'drug-catalog.html', label: 'Drug Catalog', group: 'Admin' });
+  if (canManageStocklists()) links.push({ href: 'stocklists.html', label: 'Stocklists', group: 'Admin' });
+  if (canManageWardsSites() || isAdminRole()) links.push({ href: 'topup-days.html', label: 'Top-up days', group: 'Admin' });
+  if (canViewLogs()) links.push({ href: 'active-sessions.html', label: 'Active sessions', group: 'Admin' });
+  if (canManageCalendar()) links.push({ href: 'bank-holidays.html', label: 'Bank holidays', group: 'Admin' });
+  if (isDeveloper()) links.push({ href: 'system-settings.html', label: 'System settings', group: 'Admin' });
+  if (canViewLogs()) links.push({ href: 'logs.html', label: 'Logs', group: 'Admin' });
   if (insightsEnabled() && canViewDashboard()) links.push({ href: 'insights.html', label: 'Insights', group: 'Insights' });
   if (canViewBi() && biEnabled()) {
     links.push({ href: 'bi-analytics.html', label: 'Analytics', group: 'ED&G™ Business Intelligence Suite' });
     links.push({ href: 'bi-insights.html', label: 'Item usage', group: 'ED&G™ Business Intelligence Suite' });
     links.push({ href: 'bi-predictive.html', label: 'Predictive top-up', group: 'ED&G™ Business Intelligence Suite' });
   }
-  if (isGovernance()) links.push({ href: 'audit.html', label: 'Audit', group: 'Governance' });
+  if (canSeeAudit()) links.push({ href: 'audit.html', label: 'Audit', group: 'Governance' });
   if (canPostBanners()) links.push({ href: 'notifications.html', label: 'Banners', group: isSuperuser() ? 'Admin' : 'Banners' });
   return links;
 }
@@ -1064,7 +1073,7 @@ function buildAreaTiles() {
     Insights: svg('<path d="M4 20V11M10 20V5M16 20v-6M2 20h20"/>'),
     'ED&G™ Business Intelligence Suite': svg('<path d="M3 20h18"/><path d="M5 16l4-5 4 3 6-8"/><circle cx="19" cy="6" r="1.6"/>'),
   };
-  return groups.map(g => ({ group: g, icon: iconFor[g] || '•', firstHref: links.find(l => l.group === g).href, label: g === 'Admin' ? (isSuperuser() ? 'System Admin' : 'User Management') : g }));
+  return groups.map(g => ({ group: g, icon: iconFor[g] || '•', firstHref: links.find(l => l.group === g).href, label: g === 'Admin' ? (isSuperuser() ? 'System Admin' : 'Administration') : g }));
 }
 
 
@@ -1106,7 +1115,7 @@ const PAGE_META = {
   'sites.html': ['hospital', 'Sites', 'Hospital sites that wards belong to.'],
   'wards.html': ['bed', 'Wards', 'Create wards, set top-up days, suspend them and control alternative-stock swaps.'],
   'users.html': ['users', 'Users', 'Invite staff with permissions and wards pre-set, and manage existing accounts.'],
-  'titles.html': ['tag', 'Titles', 'Job titles used as labels on accounts \u2014 permissions come from the tickboxes.'],
+  'roles.html': ['tag', 'Roles', 'Create roles and choose what each one can do. Giving someone a role applies its permissions automatically.'],
   'drug-catalog.html': ['pill', 'Drug catalog', 'Every orderable medicine, its pack size and alternatives.'],
   'stocklists.html': ['clipboard', 'Stocklists', 'Per-ward min/max stock levels. Add or remove a drug across every ward.'],
   'notifications.html': ['megaphone', 'Banners', 'Post notices that everyone sees at the top of every page.'],

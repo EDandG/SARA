@@ -442,7 +442,7 @@ async function loadStockList() {
   const { data, error } = await sb.from('blist_items').select('*').eq('ward_id', ward_id).order('medicine_name');
   if (error) { listEl.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
   if (!data?.length) { listEl.innerHTML = `<div class="empty">No stocklist uploaded for this ward yet.</div>`; return; }
-  const canEdit = isSuperuser() || canManageStocklists();
+  const canEdit = canManageStocklists();
   listEl.innerHTML = `<table><thead><tr><th>Medicine</th><th>Min qty</th><th>Max qty</th>${canEdit ? '<th>Restricted reorder</th><th></th>' : ''}</tr></thead><tbody>
     ${data.map(i => `<tr>
       <td>${esc(i.medicine_name)}</td>
@@ -794,7 +794,7 @@ async function renderAdminStock() {
 }
 
 (async () => {
-  const p = await requireAuth({ require: () => isSuperuser() || canManageStocklists() });
+  const p = await requireAuth({ require: () => canManageStocklists() });
   if (!p) return;
   document.getElementById('main').innerHTML = '<div id="body"></div>';
   renderAdminStock();

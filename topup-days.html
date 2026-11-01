@@ -52,7 +52,7 @@ async function renderTopupDaysTab() {
 }
 
 (async () => {
-  const p = await requireAuth({ require: () => isSuperuser() || isAdminRole() });
+  const p = await requireAuth({ require: () => canManageWardsSites() || isAdminRole() });
   if (!p) return;
   document.getElementById('main').innerHTML = '<div id="body"></div>';
   renderTopupDaysTab();

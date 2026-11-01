@@ -67,7 +67,7 @@ async function renderSystemSettings() {
     <div class="card"><p class="muted">The top-up countdown window is Developer-only.</p></div>`}
     <div class="card">
       <h2>Duplicate-order warning window</h2>
-      <p class="muted">How far back a ward checks for a recent matching order before warning "already ordered" — and how far back processing checks before allowing an item to be marked duplicate. Developer and Superuser can both set this.</p>
+      <p class="muted">How far back a ward checks for a recent matching order before warning "already ordered" — and how far back processing checks before allowing an item to be marked duplicate. Only the Developer can set this.</p>
       <label>Window (hours)</label>
       <input type="number" min="1" id="dup-window" value="${systemSettings.duplicate_window_hours || '48'}" style="max-width:120px;" />
       <button class="btn magenta" style="margin-top:14px;" id="save-dup-window">Save duplicate window</button>
@@ -81,14 +81,14 @@ async function renderSystemSettings() {
     </div>
     <div class="card">
       <h2>Order history window</h2>
-      <p class="muted">How far back a ward's order history shows, everywhere it's displayed. Developer and Superuser can both set this.</p>
+      <p class="muted">How far back a ward's order history shows, everywhere it's displayed. Only the Developer can set this.</p>
       <label>Window (days)</label>
       <input type="number" min="1" id="history-window" value="${systemSettings.order_history_days || '7'}" style="max-width:120px;" />
       <button class="btn magenta" style="margin-top:14px;" id="save-history-window">Save order history window</button>
     </div>
     ${isDeveloper() ? `<div class="card">
       <h2>Paid features</h2>
-      <p class="muted">These are separate paid modules. Each stays off and hidden from everyone \u2014 including Superusers \u2014 until you switch it on here. Only the Developer sees this card. ED&G™ Business Intelligence Suite additionally still needs the per-user BI tickbox.</p>
+      <p class="muted">These are separate paid modules. Each stays off and hidden from everyone \u2014 including administrators \u2014 until you switch it on here. Only the Developer sees this card. ED&G™ Business Intelligence Suite additionally still needs the per-user BI tickbox.</p>
       <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-insights" style="width:auto; margin-top:3px;" ${insightsEnabled() ? 'checked' : ''} /><span><b>Insights</b><br><span class="muted" style="font-size:12.5px;">Orders due today and percentage processed</span> <a href="insights.html" style="font-size:12.5px; margin-left:6px;">Where it appears</a></span></label>
       <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-bi" style="width:auto; margin-top:3px;" ${biEnabled() ? 'checked' : ''} /><span><b>ED&G™ Business Intelligence Suite</b><br><span class="muted" style="font-size:12.5px;">Analytics, item usage and predictive top-up reporting</span> <a href="bi-analytics.html" style="font-size:12.5px; margin-left:6px;">Where it appears</a></span></label>
       <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-abovemax" style="width:auto; margin-top:3px;" ${aboveMaxEnabled() ? 'checked' : ''} /><span><b>Above-max ordering</b><br><span class="muted" style="font-size:12.5px;">Wards can order above stocklist max, with the approval step</span> <a href="approvals.html" style="font-size:12.5px; margin-left:6px;">Where it appears</a></span></label>
@@ -115,7 +115,7 @@ async function renderSystemSettings() {
     </div>` : ''}
     <div class="card">
       <h2>Second-person picking check</h2>
-      <p class="muted">When on, a picked request must be checked by a different person (someone with the check permission) before it counts as complete. When off, a request is complete as soon as the picker confirms it, and the record shows the check was not required. Developer and Superuser can both set this.</p>
+      <p class="muted">When on, a picked request must be checked by a different person (someone with the check permission) before it counts as complete. When off, a request is complete as soon as the picker confirms it, and the record shows the check was not required. Only the Developer can set this.</p>
       <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="check-toggle" style="width:auto;" ${pickingCheckRequired() ? 'checked' : ''} />Require a second-person check</label>
       <div id="nocheck-wrap" style="margin-top:12px;${pickingCheckRequired() ? ' display:none;' : ''}">
         <label for="nocheck-label">Wording shown in the audit trail while the check is off</label>
@@ -128,7 +128,7 @@ async function renderSystemSettings() {
     </div>
     <div class="card">
       <h2>Overdue top-up preview &amp; prefill</h2>
-      <p class="muted">When a ward's top-up is due and wasn't submitted on time, this lets processing staff preview what a full top-up would look like (every stocklist item at max quantity), and lets whoever has ordering access to that ward pull that same list into a real order to submit. Nothing is auto-created — this only controls whether the option appears. Developer and Superuser can both set this.</p>
+      <p class="muted">When a ward's top-up is due and wasn't submitted on time, this lets processing staff preview what a full top-up would look like (every stocklist item at max quantity), and lets whoever has ordering access to that ward pull that same list into a real order to submit. Nothing is auto-created — this only controls whether the option appears. Only the Developer can set this.</p>
       <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="overdue-toggle" style="width:auto;" ${systemSettings.overdue_topup_preview_enabled === 'true' ? 'checked' : ''} />Enabled</label>
     </div>
     <div class="card">
@@ -355,7 +355,7 @@ async function renderSystemSettings() {
 }
 
 (async () => {
-  const p = await requireAuth({ require: (pr) => ['developer', 'superuser'].includes(pr.role) });
+  const p = await requireAuth({ require: () => isDeveloper() });
   if (!p) return;
   document.getElementById('main').innerHTML = '<div id="body"></div>';
   renderSystemSettings();

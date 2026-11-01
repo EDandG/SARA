@@ -40,7 +40,7 @@ async function renderWards() {
   const body = document.getElementById('body');
   if (!sites.length) { body.innerHTML = `<div class="card"><div class="empty">Create a hospital site first, then add wards to it.</div></div>`; return; }
 
-  const fullAccess = isSuperuser(); // top tier (developer or superuser) \u2014 full CRUD
+  const fullAccess = canManageWardsSites(); // Developer or a wards/sites manager \u2014 full CRUD
   // Admin only gets suspend/activate, scoped to wards at sites they
   // themselves have access to \u2014 never full ward editing.
   let adminSiteIds = [];

@@ -114,7 +114,7 @@
 }
 
 (async () => {
-  const p = await requireAuth({ require: (pr) => ['governance','developer','superuser'].includes(pr.role) });
+  const p = await requireAuth({ require: () => canSeeAudit() || isDeveloper() });
   if (!p) return;
   document.getElementById('main').innerHTML = '<div id="body"></div>';
   renderAudit();
