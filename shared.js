@@ -294,7 +294,7 @@ function statusLegendHtml() {
     ['Closed, nothing sent', [['duplicate', 'Duplicate', 'Already ordered recently'], ['superseded', 'Replaced', 'A newer request took its place'], ['rejected', 'Rejected', 'Pharmacist declined it']]],
   ];
   const item = ([status, label, mean]) => `<div class="lg-item">${statusDot(status, label)}<span><b>${esc(label)}</b><small>${esc(mean)}</small></span></div>`;
-  return `<details class="legend-key" open><summary>What the dots mean</summary>
+  return `<details class="legend-key" open><summary>Key</summary>
     <div class="lg-grid">
       ${groups.map(([g, items]) => `<div class="lg-group"><div class="lg-head">${esc(g)}</div>${items.map(item).join('')}</div>`).join('')}
       <div class="lg-group"><div class="lg-head">When it is processed</div>

@@ -59,6 +59,7 @@ async function loadBuilder(ward_id) {
     sb.from('drug_catalog_sections').select('drug_catalog_id, section_id'),
   ]);
   builderSnapshotAtParse = stocklistFingerprint(current || []);
+  builderBaseline = Object.fromEntries((current || []).map(i => [i.medicine_name, { min_qty: i.min_qty, max_qty: i.max_qty }]));
   const currentByName = Object.fromEntries((current || []).map(i => [i.medicine_name, i]));
   builderSections = secs || [];
   const nameById = Object.fromEntries(catalog.map(c => [c.id, c.medicine_name]));
@@ -90,16 +91,31 @@ function builderVisible() {
   });
 }
 
+// Baseline = what the ward has live right now, so the summary can show added / removed / changed.
+let builderBaseline = {};
+const qtyNorm = (v) => (v === '' || v == null) ? null : Number(v);
+function builderDiff() {
+  const added = [], removed = [], changed = [];
+  Object.entries(builderState).forEach(([name, st]) => {
+    const b = builderBaseline[name];
+    if (st.checked && !b) added.push(name);
+    else if (!st.checked && b) removed.push(name);
+    else if (st.checked && b && (qtyNorm(st.min_qty) !== qtyNorm(b.min_qty) || Number(st.max_qty) !== Number(b.max_qty))) changed.push(name);
+  });
+  return { added, removed, changed };
+}
+
 function renderBuilderList() {
   const el = document.getElementById('builder-list');
   const prevScroll = el.querySelector('[data-bld-scroll]')?.scrollTop || 0;
   if (!catalog.length) { el.innerHTML = `<div class="empty">The drug catalog is empty — a developer needs to add drugs there first.</div>`; return; }
-  const total = catalog.filter(c => !c.hidden || builderState[c.medicine_name]?.checked).length;
-  const ticked = Object.values(builderState).filter(x => x.checked).length;
+  const inScope = catalog.filter(c => !c.hidden || builderState[c.medicine_name]?.checked);
+  const total = inScope.filter(c => builderState[c.medicine_name].checked).length;
   const visible = builderVisible();
+  const shownOn = visible.filter(c => builderState[c.medicine_name].checked).length;
+
   // group the visible drugs under their classes (a drug in two classes appears under both)
   const groups = [];
-  const secName = Object.fromEntries(builderSections.map(x => [x.id, x.name]));
   const byGroup = new Map();
   visible.forEach(c => {
     const tags = (builderTags[c.medicine_name] || []).filter(t => builderChip === 'all' || builderChip === 'none' || t === builderChip);
@@ -107,44 +123,106 @@ function renderBuilderList() {
   });
   builderSections.forEach(x => { if (byGroup.has(x.id)) groups.push([x.id, x.name, byGroup.get(x.id)]); });
   if (byGroup.has('__none')) groups.push(['__none', builderSections.length ? 'No class' : 'All drugs', byGroup.get('__none')]);
-  const chip = (id, label, n) => `<button class="btn small ${builderChip === id ? 'magenta' : 'ghost'}" data-chip="${id}">${esc(label)}${n != null ? ` <span style="opacity:.75;">${n}</span>` : ''}</button>`;
-  const cnt = (id) => catalog.filter(c => (!c.hidden || builderState[c.medicine_name]?.checked) && (id === 'none' ? !(builderTags[c.medicine_name] || []).length : (builderTags[c.medicine_name] || []).includes(id))).length;
-  const view = (id, label) => `<button class="btn small ${builderView === id ? 'magenta' : 'ghost'}" data-view="${id}">${label}</button>`;
-  el.innerHTML = `
-    <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
-      ${chip('all', 'All', total)}${builderSections.map(x => chip(x.id, x.name, cnt(x.id))).join('')}${builderSections.length ? chip('none', 'No class', cnt('none')) : ''}
-      <span style="flex:1;"></span>
-      ${view('all', 'All')}${view('on', 'Ticked')}${view('off', 'Not ticked')}
-    </div>
-    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px; padding:8px 10px; background:var(--bg-soft, #f4f6fa); border-radius:8px;">
-      <b style="font-size:13px;">${ticked} of ${total} ticked</b>
-      <span class="muted" style="font-size:12.5px;">${visible.length} shown</span>
-      <span style="flex:1;"></span>
-      <button class="btn small ghost" id="bld-tick-shown">Tick all shown</button>
-      <button class="btn small ghost" id="bld-untick-shown">Untick all shown</button>
-      <span class="muted" style="font-size:12.5px;">Set for ticked &amp; shown:</span>
-      <input type="number" min="0" id="bld-bulk-min" placeholder="Min" style="width:64px; text-align:center;" />
-      <input type="number" min="1" id="bld-bulk-max" placeholder="Max" style="width:64px; text-align:center;" />
-      <button class="btn small ghost" id="bld-apply">Apply</button>
-    </div>
-    <div data-bld-scroll style="max-height:460px; overflow-y:auto; border:1px solid var(--border); border-radius:8px;">
-    <table><thead><tr><th style="width:36px;"></th><th>Drug</th><th class="muted">Pack size</th><th style="width:100px;">Min qty</th><th style="width:100px;">Max qty</th></tr></thead><tbody>
-    ${groups.map(([gid, gname, list]) => {
-      const on = list.filter(c => builderState[c.medicine_name].checked).length;
-      return `<tr class="bld-group"><td colspan="5" style="background:var(--bg-soft, #eef2f7); font-weight:700; padding:7px 10px;">${esc(gname)} <span class="muted" style="font-weight:400;">— ${on} of ${list.length} ticked</span>
-        <span style="float:right;"><button class="btn small ghost" data-grp-on="${gid}">Tick all</button> <button class="btn small ghost" data-grp-off="${gid}">Untick all</button></span></td></tr>` +
-      list.map(c => {
-        const st = builderState[c.medicine_name];
-        return `<tr>
-        <td><input type="checkbox" class="builder-cb" data-name="${esc(c.medicine_name)}" ${st.checked ? 'checked' : ''} /></td>
-        <td>${esc(c.medicine_name)}</td>
-        <td class="muted">${esc(c.pack_size || '—')}</td>
-        <td><input type="number" min="0" class="builder-minqty" data-name="${esc(c.medicine_name)}" value="${st.min_qty}" placeholder="—" ${st.checked ? '' : 'disabled'} style="width:60px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" /></td>
-        <td><input type="number" min="1" class="builder-qty" data-name="${esc(c.medicine_name)}" value="${st.max_qty}" ${st.checked ? '' : 'disabled'} style="width:60px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" /></td>
-      </tr>`; }).join('');
-    }).join('')}
-    </tbody></table>
-    ${!visible.length ? '<div class="empty">No drugs match.</div>' : ''}
+
+  const onIn = (list) => list.filter(c => builderState[c.medicine_name].checked).length;
+  const inClass = (id) => inScope.filter(c => id === 'none' ? !(builderTags[c.medicine_name] || []).length : (builderTags[c.medicine_name] || []).includes(id));
+  const rail = (id, label) => {
+    const list = id === 'all' ? inScope : inClass(id);
+    return `<button class="sb-rail ${builderChip === id ? 'on' : ''}" data-chip="${id}"><span>${esc(label)}</span><span class="sb-n">${onIn(list)}</span></button>`;
+  };
+  const seg = (id, label) => `<button class="${builderView === id ? 'on' : ''}" data-view="${id}">${label}</button>`;
+  const d = builderDiff();
+  const bars = builderSections.filter(x => inClass(x.id).length).map(x => {
+    const l = inClass(x.id), n = onIn(l);
+    return `<div class="sb-bar"><div><span>${esc(x.name)}</span><b>${n}</b></div><i><u style="width:${l.length ? Math.round(100 * n / l.length) : 0}%"></u></i></div>`;
+  }).join('');
+  const stepper = (cls, name, val, label) => `<span class="sb-lbl">${label}</span>
+    <button class="sb-step" data-step="${cls}" data-dir="-1" data-name="${esc(name)}" aria-label="Decrease ${label.toLowerCase()} for ${esc(name)}">−</button>
+    <b class="sb-val">${val === '' ? '—' : val}</b>
+    <button class="sb-step" data-step="${cls}" data-dir="1" data-name="${esc(name)}" aria-label="Increase ${label.toLowerCase()} for ${esc(name)}">+</button>`;
+
+  el.innerHTML = `<style>
+    .sb{display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start;}
+    .sb-railbox{flex:0 0 210px; background:#fff; border:1px solid var(--border); border-radius:12px; padding:10px; display:flex; flex-direction:column; gap:2px;}
+    .sb-railbox h4{margin:2px 8px 6px; font-size:12px; letter-spacing:.6px; text-transform:uppercase; color:var(--text-dim);}
+    .sb-rail{display:flex; justify-content:space-between; align-items:center; gap:8px; text-align:left; border:0; background:none; border-radius:8px; padding:10px; min-height:44px; font:inherit; font-size:14px; cursor:pointer; color:var(--text);}
+    .sb-rail.on{background:var(--teal-pale); color:var(--navy); font-weight:700;}
+    .sb-n{font-size:12.5px; font-weight:600; color:var(--text-dim); background:var(--bg); border-radius:10px; padding:2px 8px;}
+    .sb-main{flex:999 1 460px; min-width:0; background:#fff; border:1px solid var(--border); border-radius:12px; overflow:hidden;}
+    .sb-bar1{display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:10px 16px; background:#f7f9fa; border-bottom:1px solid var(--border-soft); font-size:14px;}
+    .sb-bar1 .lnk{border:0; background:none; color:var(--teal); font:inherit; font-size:14px; font-weight:600; padding:8px; cursor:pointer;}
+    .sb-seg{display:flex; border:1px solid #aeb7bd; border-radius:8px; overflow:hidden; margin-left:auto;}
+    .sb-seg button{border:0; background:#fff; padding:0 14px; height:38px; font:inherit; font-size:14px; cursor:pointer;}
+    .sb-seg button.on{background:var(--teal); color:#fff; font-weight:700;}
+    .sb-scroll{max-height:560px; overflow-y:auto;}
+    .sb-grp{position:sticky; top:0; z-index:1; background:#fff; padding:12px 16px 6px; display:flex; gap:10px; align-items:baseline; border-bottom:1px solid var(--border-soft);}
+    .sb-grp .g{font-size:12.5px; color:var(--text-dim);}
+    .sb-grp .acts{margin-left:auto;}
+    .sb-grp .acts button{border:0; background:none; color:var(--teal); font:inherit; font-size:13px; font-weight:600; padding:6px; cursor:pointer;}
+    .sb-row{display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:11px 16px; border-bottom:1px solid #eef0f3;}
+    .sb-row.on{background:#f6faff;}
+    .sb-row input[type=checkbox]{width:20px; height:20px; accent-color:var(--teal); margin:0; cursor:pointer;}
+    .sb-name{flex:1 1 220px; min-width:0;}
+    .sb-name b{display:block; font-size:15px; font-weight:600; line-height:1.3;}
+    .sb-name span{font-size:13px; color:var(--text-dim);}
+    .sb-q{display:flex; gap:6px; align-items:center;}
+    .sb-q + .sb-q{margin-left:10px;}
+    .sb-lbl{font-size:12px; color:var(--text-dim); width:28px;}
+    .sb-step{width:36px; height:36px; border:1px solid #aeb7bd; background:#fff; border-radius:8px; font-size:18px; line-height:1; cursor:pointer; padding:0;}
+    .sb-val{min-width:24px; text-align:center; font-size:15px;}
+    .sb-side{flex:1 1 280px; max-width:360px; background:#fff; border:1px solid var(--border); border-radius:12px; padding:20px; display:flex; flex-direction:column; gap:14px; position:sticky; top:12px;}
+    .sb-big{font-size:36px; font-weight:700; line-height:1.1;}
+    .sb-big small{font-size:16px; font-weight:400; color:var(--text-dim);}
+    .sb-kv{display:flex; justify-content:space-between; font-size:14px;}
+    .sb-bar{font-size:13px;}
+    .sb-bar div{display:flex; justify-content:space-between; margin-bottom:4px;}
+    .sb-bar i{display:block; height:6px; background:var(--border-soft); border-radius:3px;}
+    .sb-bar u{display:block; height:6px; background:var(--teal); border-radius:3px; text-decoration:none;}
+    .sb-side h4{margin:0; font-size:12px; letter-spacing:.6px; text-transform:uppercase; color:var(--text-dim); border-top:1px solid var(--border-soft); padding-top:12px;}
+    .sb button:focus-visible{outline:3px solid #ffb81c; outline-offset:1px;}
+  </style>
+  <div class="sb">
+    <nav class="sb-railbox" aria-label="Classes"><h4>Classes</h4>
+      ${rail('all', 'All classes')}${builderSections.map(x => rail(x.id, x.name)).join('')}${builderSections.length ? rail('none', 'No class') : ''}
+    </nav>
+    <section class="sb-main">
+      <div class="sb-bar1">
+        <span><b>${shownOn}</b> of ${visible.length} shown are on this list</span>
+        <button class="lnk" id="bld-tick-shown">Add all shown</button>
+        <button class="lnk" id="bld-untick-shown">Remove all shown</button>
+        <div class="sb-seg" role="group" aria-label="Show">${seg('all', 'All')}${seg('on', 'On list')}${seg('off', 'Not on list')}</div>
+      </div>
+      <div class="sb-bar1" style="background:#fff;">
+        <span class="muted" style="font-size:13px;">Set for ticked &amp; shown:</span>
+        <input type="number" min="0" id="bld-bulk-min" placeholder="Min" aria-label="Min for all ticked and shown" style="width:64px; text-align:center;" />
+        <input type="number" min="1" id="bld-bulk-max" placeholder="Max" aria-label="Max for all ticked and shown" style="width:64px; text-align:center;" />
+        <button class="btn small ghost" id="bld-apply">Apply</button>
+      </div>
+      <div class="sb-scroll" data-bld-scroll>
+      ${groups.map(([gid, gname, list]) => `
+        <div class="sb-grp"><b>${esc(gname)}</b><span class="g">${onIn(list)} of ${list.length} on list</span>
+          <span class="acts"><button data-grp-on="${gid}">Add all</button><button data-grp-off="${gid}">Remove all</button></span></div>
+        ${list.map(c => { const st = builderState[c.medicine_name];
+          return `<div class="sb-row ${st.checked ? 'on' : ''}">
+            <input type="checkbox" class="builder-cb" data-name="${esc(c.medicine_name)}" ${st.checked ? 'checked' : ''} aria-label="On list: ${esc(c.medicine_name)}${c.pack_size ? ', ' + esc(c.pack_size) : ''}" />
+            <div class="sb-name"><b>${esc(c.medicine_name)}</b><span>${esc(c.pack_size || '—')}</span></div>
+            ${st.checked ? `<div class="sb-q">${stepper('min', c.medicine_name, st.min_qty, 'Min')}</div><div class="sb-q">${stepper('max', c.medicine_name, st.max_qty, 'Max')}</div>` : ''}
+          </div>`; }).join('')}`).join('')}
+      ${!visible.length ? '<div class="empty" style="padding:40px 16px;">No drugs match.</div>' : ''}
+      </div>
+    </section>
+    <aside class="sb-side">
+      <div><div class="muted" style="font-size:13px; font-weight:600;">${esc(wards.find(w => w.id === document.getElementById('stock-ward')?.value)?.name || 'This ward')} stock list</div>
+        <div class="sb-big">${total} <small>drug${total === 1 ? '' : 's'}</small></div></div>
+      <div>
+        <div class="sb-kv"><span>Added</span><b style="color:#00703c;">+${d.added.length}</b></div>
+        <div class="sb-kv"><span>Removed</span><b style="color:#b5121b;">−${d.removed.length}</b></div>
+        <div class="sb-kv"><span>Quantities changed</span><b>${d.changed.length}</b></div>
+      </div>
+      ${bars ? `<h4>By class</h4>${bars}` : ''}
+      <button class="btn magenta" id="builder-publish-btn" style="width:100%; padding:13px 16px; font-size:16px;">Review and publish</button>
+      <div class="muted" style="font-size:12.5px; text-align:center;">Nothing changes on the ward until you confirm.</div>
+    </aside>
   </div>`;
 
   const sc = el.querySelector('[data-bld-scroll]'); if (sc) sc.scrollTop = prevScroll;
@@ -171,12 +249,16 @@ function renderBuilderList() {
     builderState[cb.dataset.name].checked = cb.checked;
     redraw();
   });
-  el.querySelectorAll('.builder-minqty').forEach(inp => inp.oninput = () => {
-    const v = inp.value.trim();
-    builderState[inp.dataset.name].min_qty = v === '' ? '' : Math.max(0, parseInt(v, 10) || 0);
-  });
-  el.querySelectorAll('.builder-qty').forEach(inp => inp.oninput = () => {
-    builderState[inp.dataset.name].max_qty = Math.max(1, parseInt(inp.value, 10) || 1);
+  // min / max steppers (min is blank until first set; min can't pass max)
+  el.querySelectorAll('[data-step]').forEach(btn => btn.onclick = () => {
+    const st = builderState[btn.dataset.name], dir = parseInt(btn.dataset.dir, 10);
+    if (btn.dataset.step === 'min') {
+      const cur = st.min_qty === '' ? 0 : st.min_qty;
+      st.min_qty = Math.min(st.max_qty, Math.max(0, cur + dir));
+    } else {
+      st.max_qty = Math.max(1, st.min_qty === '' ? 1 : Math.max(1, st.min_qty), st.max_qty + dir);
+    }
+    redraw();
   });
 }
 
@@ -217,7 +299,8 @@ async function publishFromBuilder() {
   confirmChange({
     scope: 'ward', wardName,
     title: `Replace ${wardName || 'this ward'}\u2019s whole stocklist with ${toPublish.length} drug${toPublish.length === 1 ? '' : 's'}`,
-    details: 'Anything not ticked in the builder will be removed from this ward\u2019s stocklist.',
+    details: (() => { const d = builderDiff(); const L = (a) => a.length ? a.slice(0, 8).map(esc).join('; ') + (a.length > 8 ? ` and ${a.length - 8} more` : '') : 'none';
+      return `Added (${d.added.length}): ${L(d.added)}. Removed (${d.removed.length}): ${L(d.removed)}. Quantities changed (${d.changed.length}): ${L(d.changed)}. Anything not ticked in the builder is removed from this ward\u2019s stocklist.`; })(),
     confirmLabel: 'Publish stocklist',
     onConfirm: async () => {
       const { error: delErr } = await sb.from('blist_items').delete().eq('ward_id', ward_id);
@@ -629,13 +712,12 @@ async function renderAdminStock() {
     </div>
     <div class="card">
       <h2>Build stocklist from catalog</h2>
-      <p class="muted">Tick what this ward stocks, grouped by the classes you set up in the drug catalogue. Use the class buttons to focus on one group, tick a whole class at once, or set min and max for everything ticked. Nothing changes until you press <b>Publish stocklist</b>, which replaces the ward\u2019s list with your ticks. Not seeing a drug? A developer adds it in the Drug catalogue first.</p>
+      <p class="muted">Tick what this ward stocks. Pick a class on the left to focus on one group, and use the + and − buttons for min and max. Nothing changes until you press <b>Review and publish</b> and confirm, which replaces the ward’s list with your ticks. Not seeing a drug? A developer adds it in the Drug catalogue first.</p>
       <div class="row" style="margin-top:8px;">
         <div><label>Search</label><input type="text" id="builder-search" placeholder="Filter the catalog\u2026" /></div>
         <div><label>Start from another ward</label><select id="builder-copy-ward"><option value="">Copy from another ward\u2026</option></select></div>
       </div>
       <div id="builder-list" style="margin-top:8px;">Loading\u2026</div>
-      <button class="btn magenta" id="builder-publish-btn" style="margin-top:12px;">Publish stocklist</button>
     </div>
     <div class="card"><h2>Current stocklist</h2>
       <div class="row" style="margin-bottom:12px;">
@@ -686,7 +768,6 @@ async function renderAdminStock() {
   if (isDeveloper()) document.getElementById('restore-file').onchange = handleRestoreFile;
   document.getElementById('builder-search').oninput = renderBuilderList;
   document.getElementById('builder-copy-ward').onchange = (e) => { copyBuilderFromWard(e.target.value); e.target.value = ''; };
-  document.getElementById('builder-publish-btn').onclick = publishFromBuilder;
   document.getElementById('export-pdf-btn').onclick = () => exportStocklistPdf(document.getElementById('stock-ward').value);
 
   document.getElementById('add-drug-btn').onclick = async () => {
