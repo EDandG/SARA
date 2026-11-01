@@ -284,12 +284,12 @@ async function loadCatalogList() {
   const sectionsByDrug = {};
   (links || []).forEach(l => { (sectionsByDrug[l.drug_catalog_id] ??= new Set()).add(l.section_id); });
 
-  el.innerHTML = `<table><thead><tr><th>Medicine</th><th class="muted">Pack size</th><th>Sections</th>${isDeveloper() ? '<th></th>' : ''}</tr></thead><tbody>
-    ${data.map(d => `<tr>
-      <td>${esc(d.medicine_name)}</td>
+  el.innerHTML = `<table><thead><tr><th>Medicine</th><th class="muted">Pack size</th><th>Sections</th><th></th></tr></thead><tbody>
+    ${data.map(d => `<tr style="${d.hidden ? 'opacity:.6;' : ''}">
+      <td>${esc(d.medicine_name)}${d.hidden ? ' <span class="muted" style="font-size:12px;">(hidden)</span>' : ''}</td>
       <td class="muted">${esc(d.pack_size || '\u2014')}</td>
       <td>${(sections || []).length ? (sections || []).map(s => `<label style="display:inline-flex; align-items:center; gap:4px; font-weight:400; margin-right:10px;"><input type="checkbox" class="section-tag-cb" data-drug="${d.id}" data-section="${s.id}" ${sectionsByDrug[d.id]?.has(s.id) ? 'checked' : ''} style="width:auto;" />${esc(s.name)}</label>`).join('') : '<span class="muted">No sections defined yet</span>'}</td>
-      ${isDeveloper() ? `<td style="text-align:right;"><button class="btn small danger" data-delete="${d.id}" data-name="${esc(d.medicine_name)}">Remove</button></td>` : ''}
+      <td style="text-align:right; white-space:nowrap;"><button class="btn small" data-hide="${d.id}" data-to="${d.hidden ? 'false' : 'true'}">${d.hidden ? 'Unhide' : 'Hide'}</button>${isDeveloper() ? ` <button class="btn small danger" data-delete="${d.id}" data-name="${esc(d.medicine_name)}">Remove</button>` : ''}</td>
     </tr>`).join('')}
   </tbody></table>`;
 
@@ -301,6 +301,13 @@ async function loadCatalogList() {
       const { error: e } = await sb.from('drug_catalog_sections').delete().eq('drug_catalog_id', cb.dataset.drug).eq('section_id', cb.dataset.section);
       if (e) { toast(e.message, true); cb.checked = true; return; }
     }
+  });
+
+  el.querySelectorAll('[data-hide]').forEach(b => b.onclick = async () => {
+    const { error: e } = await sb.rpc('set_drug_hidden', { p_id: b.dataset.hide, p_hidden: b.dataset.to === 'true' });
+    if (e) return toast(e.message, true);
+    toast(b.dataset.to === 'true' ? 'Hidden from ordering and stocklist building.' : 'Visible again.');
+    loadCatalogList();
   });
 
   if (isDeveloper()) {
@@ -319,7 +326,8 @@ async function loadCatalogList() {
   const p = await requireAuth({ require: () => isSuperuser() });
   if (!p) return;
   document.getElementById('main').innerHTML = '<div id="body"></div>';
-  renderDrugCatalog();
+  await renderDrugCatalog();
+  if (!alternativesEnabled()) [...document.querySelectorAll('#body .card')].find(c => /^Substitution groups/.test(c.querySelector('h2')?.textContent.trim() || ''))?.remove();
 })();
 </script>
 </body>

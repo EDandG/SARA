@@ -80,7 +80,7 @@ async function renderPending() {
   }
 
   function queueTableHtml(list) {
-    if (!list.length) return `<div class="empty">Nothing here right now.</div>`;
+    if (!list.length) return `<div class="empty">Nothing here right now.${nextTopupHint() ? ' ' + esc(nextTopupHint()) : ''}</div>`;
     return `<table><thead><tr><th>Ward</th><th>Submitted by</th><th>Submitted</th><th>Items</th><th>Pending</th><th></th><th></th></tr></thead><tbody>
       ${list.map(s => {
         const lines = (allLines || []).filter(o => o.session_id === s.id);
@@ -304,7 +304,7 @@ async function renderProcessingModalBody(sessionId) {
   }
 
   const { data: wardRow } = await sb.from('wards').select('allow_stock_substitution').eq('id', s.ward_id).single();
-  const substitutionAllowed = !!wardRow?.allow_stock_substitution;
+  const substitutionAllowed = alternativesEnabled() && !!wardRow?.allow_stock_substitution;
   const substitutesByOrderId = {};
   if (substitutionAllowed && pendingLines.length) {
     const { data: catalogRows } = await sb.from('drug_catalog').select('id, medicine_name')
@@ -354,7 +354,7 @@ async function renderProcessingModalBody(sessionId) {
   const lineCard = (o, actionsHtml = '') => `<div class="proc-line ${lineCls(o)}" id="proc-line-${o.id}">
       <div class="pl-main">
         <div class="pl-name">${esc(o.medicine_name)}${packTag(o)}</div>
-        <div class="pl-meta"><span class="badge ${o._displayStatusClass || o.status}">${o._displayStatusText || statusLabel(o.status)}</span> ${fulfilledNote(o)}</div>
+        <div class="pl-meta">${statusBadge(o._displayStatusClass || o.status, o._displayStatusText || statusBadgeText(o.status))} ${fulfilledNote(o)}</div>
       </div>
       <div class="pl-qty"><b>${o.quantity}</b><span>Qty</span></div>
       <div class="pl-actions">${actionsHtml}</div>

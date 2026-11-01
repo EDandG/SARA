@@ -73,6 +73,13 @@ async function renderSystemSettings() {
       <button class="btn magenta" style="margin-top:14px;" id="save-dup-window">Save duplicate window</button>
     </div>
     <div class="card">
+      <h2>Inactivity sign-out</h2>
+      <p class="muted">Signs people out after this many minutes with no activity, with a one-minute warning. Unsent adhoc orders are kept on the device. Set 0 to turn it off.</p>
+      <label>Minutes</label>
+      <input type="number" min="0" id="idle-minutes" value="${systemSettings.idle_timeout_minutes ?? '30'}" style="max-width:120px;" />
+      <button class="btn magenta" style="margin-top:14px;" id="save-idle">Save inactivity sign-out</button>
+    </div>
+    <div class="card">
       <h2>Order history window</h2>
       <p class="muted">How far back a ward's order history shows, everywhere it's displayed. Developer and Superuser can both set this.</p>
       <label>Window (days)</label>
@@ -81,9 +88,14 @@ async function renderSystemSettings() {
     </div>
     ${isDeveloper() ? `<div class="card">
       <h2>Paid features</h2>
-      <p class="muted">These are separate paid modules. Each stays hidden from everyone \u2014 including Superusers \u2014 until you switch it on here. Only the Developer sees this card. BI Insights additionally still needs the per-user BI tickbox.</p>
-      <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="feat-insights" style="width:auto;" ${insightsEnabled() ? 'checked' : ''} />Insights (ordering and turnaround analytics)</label>
-      <label style="display:flex; align-items:center; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-bi" style="width:auto;" ${biEnabled() ? 'checked' : ''} />BI Insights (business intelligence)</label>
+      <p class="muted">These are separate paid modules. Each stays off and hidden from everyone \u2014 including Superusers \u2014 until you switch it on here. Only the Developer sees this card. ED&G™ Business Intelligence Suite additionally still needs the per-user BI tickbox.</p>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-insights" style="width:auto; margin-top:3px;" ${insightsEnabled() ? 'checked' : ''} /><span><b>Insights</b><br><span class="muted" style="font-size:12.5px;">Orders due today and percentage processed</span> <a href="insights.html" style="font-size:12.5px; margin-left:6px;">Where it appears</a></span></label>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-bi" style="width:auto; margin-top:3px;" ${biEnabled() ? 'checked' : ''} /><span><b>ED&G™ Business Intelligence Suite</b><br><span class="muted" style="font-size:12.5px;">Analytics, item usage and predictive top-up reporting</span> <a href="bi-analytics.html" style="font-size:12.5px; margin-left:6px;">Where it appears</a></span></label>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-abovemax" style="width:auto; margin-top:3px;" ${aboveMaxEnabled() ? 'checked' : ''} /><span><b>Above-max ordering</b><br><span class="muted" style="font-size:12.5px;">Wards can order above stocklist max, with the approval step</span> <a href="approvals.html" style="font-size:12.5px; margin-left:6px;">Where it appears</a></span></label>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-alternatives" style="width:auto; margin-top:3px;" ${alternativesEnabled() ? 'checked' : ''} /><span><b>Send alternative</b><br><span class="muted" style="font-size:12.5px;">Processors can send a different pack/strength from a substitution group</span> <a href="sessions.html" style="font-size:12.5px; margin-left:6px;">Where it appears</a></span></label>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-checking" style="width:auto; margin-top:3px;" ${checkingEnabled() ? 'checked' : ''} /><span><b>Second-person checking</b><br><span class="muted" style="font-size:12.5px;">Independent check of picked requests before they are complete</span> <a href="sessions.html#awaiting-check" style="font-size:12.5px; margin-left:6px;">Where it appears</a></span></label>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-reminders" style="width:auto; margin-top:3px;" ${remindersEnabled() ? 'checked' : ''} /><span><b>Ward reminders and countdowns</b><br><span class="muted" style="font-size:12.5px;">Top-up countdown banner and overdue top-up prompts on the ordering page</span> <a href="order.html" style="font-size:12.5px; margin-left:6px;">Where it appears</a></span></label>
+      <label style="display:flex; align-items:flex-start; gap:8px; font-weight:400; margin-top:8px;"><input type="checkbox" id="feat-predictive" style="width:auto; margin-top:3px;" ${predictiveEnabled() ? 'checked' : ''} /><span><b>Predictive ordering</b><br><span class="muted" style="font-size:12.5px;">"Add your usual top-up items" suggestions for wards</span> <a href="bi-predictive.html" style="font-size:12.5px; margin-left:6px;">Where it appears</a></span></label>
     </div>` : ''}
     ${isDeveloper() ? `<div class="card" id="backup-card">
       <h2>Stocklist backup by email</h2>
@@ -137,7 +149,7 @@ async function renderSystemSettings() {
     </div>` : ''}
   `;
   applySubtabs(body, [
-    { id: 'processing', label: 'Processing & timing', heads: ['Processing cutoff', 'Top-up countdown', 'Duplicate-order', 'Order history', 'Overdue top-up'] },
+    { id: 'processing', label: 'Processing & timing', heads: ['Processing cutoff', 'Top-up countdown', 'Inactivity', 'Duplicate-order', 'Order history', 'Overdue top-up'] },
     { id: 'checks', label: 'Picking check', heads: ['Second-person'] },
     { id: 'backup', label: 'Backups', heads: ['Stocklist backup'] },
     { id: 'branding', label: 'Logos & branding', heads: ['Trust logo', 'Login screen logo'] },
@@ -165,6 +177,14 @@ async function renderSystemSettings() {
     toast('Duplicate-order window updated.');
   };
 
+  document.getElementById('save-idle').onclick = async () => {
+    const m = parseInt(document.getElementById('idle-minutes').value, 10);
+    if (isNaN(m) || m < 0) return toast('Enter 0 or a number of minutes.', true);
+    const { error } = await sb.from('system_settings').upsert({ key: 'idle_timeout_minutes', value: String(m) }, { onConflict: 'key' });
+    if (error) return toast(error.message, true);
+    systemSettings.idle_timeout_minutes = String(m);
+    toast(m ? `Signing out after ${m} minutes of inactivity.` : 'Inactivity sign-out turned off.');
+  };
   document.getElementById('save-history-window').onclick = async () => {
     const days = parseInt(document.getElementById('history-window').value, 10);
     if (!days || days < 1) return toast('Enter a window of at least 1 day.', true);
@@ -182,7 +202,10 @@ async function renderSystemSettings() {
     toast(enabled ? 'Overdue top-up preview enabled.' : 'Overdue top-up preview disabled.');
   };
 
-  [['feat-insights', 'feature_insights_enabled', 'Insights'], ['feat-bi', 'feature_bi_enabled', 'BI Insights']].forEach(([id, key, label]) => {
+  [['feat-insights', 'feature_insights_enabled', 'Insights'], ['feat-bi', 'feature_bi_enabled', 'ED&G™ Business Intelligence Suite'],
+   ['feat-abovemax', 'feature_abovemax_enabled', 'Above-max ordering'], ['feat-alternatives', 'feature_alternatives_enabled', 'Send alternative'],
+   ['feat-checking', 'feature_checking_enabled', 'Second-person checking'], ['feat-reminders', 'feature_reminders_enabled', 'Ward reminders and countdowns'],
+   ['feat-predictive', 'feature_predictive_enabled', 'Predictive ordering']].forEach(([id, key, label]) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.onchange = async (e) => {
@@ -190,7 +213,8 @@ async function renderSystemSettings() {
       const { error } = await sb.from('system_settings').upsert({ key, value: String(on) }, { onConflict: 'key' });
       if (error) { toast(error.message, true); e.target.checked = !on; return; }
       systemSettings[key] = String(on);
-      toast(`${label} ${on ? 'switched on' : 'switched off'}.`);
+      if (key === 'feature_checking_enabled' && !on) await sb.rpc('set_picking_check_required', { p_required: false }); // waive anything awaiting a check
+      toast(`${label} ${on ? 'switched on' : 'switched off'}.${key === 'feature_checking_enabled' && !on ? ' Anything awaiting a check was released.' : ''}`);
     };
   });
 

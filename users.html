@@ -97,8 +97,7 @@
     <div class="card"><h2>Logins</h2><div id="user-list">Loading\u2026</div></div>`;
   applySubtabs(body, [
     { id: 'logins', label: 'Logins', heads: ['Logins'] },
-    { id: 'invite', label: 'Invite by email', heads: ['Invite by email', 'Invitations'] },
-    { id: 'create', label: 'Create login', heads: ['Create login'] },
+    { id: 'add', label: 'Add people', heads: ['Invite by email', 'Invitations', 'Create login'] },
   ], 'logins');
 
   const formSites = sites.filter(s => wardsForForm.some(w => w.site_id === s.id));
@@ -175,10 +174,14 @@
       let flag = cb.dataset.perm;
       if (!flag) { const m = /^(?:ea-|nu-can-)(.+)$/.exec(cb.id || ''); flag = m && GRANT_IDS[m[1]]; }
       if (!flag) return;
+      const hideIt = () => { const l = cb.closest('label') || cb.parentElement; if (l) l.style.display = 'none'; };
       if (MANAGEMENT_FLAGS.includes(flag)) {
+        if (!cb.checked) { hideIt(); return; } // not theirs to give, so don't show it
         cb.disabled = true;
         cb.title = 'Only a Superuser or Developer can give or change management permissions.';
-      } else if (isSelf || (!profile?.[flag] && !cb.checked)) {
+      } else if (!isSelf && !profile?.[flag] && !cb.checked) {
+        hideIt();
+      } else if (isSelf || !profile?.[flag]) {
         cb.disabled = true;
         cb.title = isSelf ? "You can't change your own permissions." : 'You can only grant permissions you hold yourself.';
       }
@@ -440,13 +443,14 @@
         <div class="u-main"><b>${esc(u.full_name || 'Unnamed')}</b>${isSuperuser() ? `<span class="u-id"> ${esc(u.user_id || '')}</span>` : ''}</div>
         <span class="u-where muted" title="${esc(where)}">${esc(where)}</span>
         <span class="u-count" title="${esc(caps.join(', ') || 'No functions')}">${caps.length} function${caps.length === 1 ? '' : 's'}</span>
-        <span class="u-dot ${u.active ? 'on' : ''}" title="${u.active ? 'Active' : 'Inactive'}"></span>
+        ${!u.active && u.suspended_at ? `<span class="u-susp" title="Suspended on ${esc(new Date(u.suspended_at).toLocaleString('en-GB'))}">Suspended ${esc(new Date(u.suspended_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }))}</span>` : ''}
+        <span class="u-dot ${u.active ? 'on' : ''}" title="${u.active ? 'Active' : (u.suspended_at ? 'Suspended' : 'Inactive')}"></span>
         <span class="u-chev" aria-hidden="true">\u203a</span>
       </div>
       <div id="access-row-${u.id}" class="u-body hidden">
         <div class="u-actions">
           <span class="muted" style="font-size:12px; margin-right:auto;">${caps.length ? esc(caps.join(' \u00b7 ')) : 'No functions ticked'}<br>Email for password reset: ${u.email_hash ? `<b>${esc(u.email_masked || 'linked')}</b>` : '<b style="color:#9b1239;">none linked</b>'}</span>
-          ${u.role === 'developer' && u.id !== profile.id ? '' : `<button class="btn small ghost" data-setemail="${u.id}">${u.email_hash ? 'Change email' : 'Add email'}</button>`}
+          ${u.role === 'developer' || u.id === profile.id ? '' : `<button class="btn small ghost" data-setemail="${u.id}">${u.email_hash ? 'Change email' : 'Add email'}</button>`}
           ${u.role === 'developer' ? '<span class="muted" style="font-size:12px;">Managed via Supabase</span>' : `
           ${u.id !== profile.id ? `<button class="btn small ghost" data-reset="${u.id}">Reset password</button>` : ''}
           ${canSusp ? `<button class="btn small ${u.active ? 'danger' : 'magenta'}" data-susp="${u.id}">${u.active ? 'Suspend' : 'Reactivate'}</button>` : ''}`}

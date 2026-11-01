@@ -63,7 +63,7 @@ function renderBuilderList() {
   const search = (document.getElementById('builder-search')?.value || '').trim().toLowerCase();
   const el = document.getElementById('builder-list');
   if (!catalog.length) { el.innerHTML = `<div class="empty">The drug catalog is empty \u2014 a developer needs to add drugs there first.</div>`; return; }
-  const visible = catalog.filter(c => !search || c.medicine_name.toLowerCase().includes(search));
+  const visible = catalog.filter(c => (!c.hidden || builderState[c.medicine_name]?.checked) && (!search || c.medicine_name.toLowerCase().includes(search)));
   el.innerHTML = `<div style="max-height:420px; overflow-y:auto; border:1px solid var(--border); border-radius:8px;">
     <table><thead><tr><th style="width:36px;"></th><th>Drug</th><th class="muted">Pack size</th><th style="width:100px;">Min qty</th><th style="width:100px;">Max qty</th></tr></thead><tbody>
     ${visible.map(c => {
@@ -494,9 +494,9 @@ async function renderAdminStock() {
   }).join('') + (unassignedWards.length ? `<optgroup label="No site assigned">${wardOptionsHtml(unassignedWards)}</optgroup>` : '');
 
   const { data: catalogRows } = await sb.from('drug_catalog').select('*').order('medicine_name');
-  catalog = catalogRows || [];
+  catalog = catalogRows || []; // hidden drugs kept so a ward's existing stock isn't lost on publish
   const catalogOptionHtml = (id) => `<option value="">${catalog.length ? 'Choose a drug\u2026' : 'Catalog is empty'}</option>` +
-    catalog.map(c => `<option value="${esc(c.medicine_name)}">${esc(c.medicine_name)}${c.pack_size ? ` (${esc(c.pack_size)})` : ''}</option>`).join('');
+    catalog.filter(c => !c.hidden).map(c => `<option value="${esc(c.medicine_name)}">${esc(c.medicine_name)}${c.pack_size ? ` (${esc(c.pack_size)})` : ''}</option>`).join('');
 
   body.innerHTML = `
     <div class="card">

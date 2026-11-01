@@ -8,51 +8,46 @@
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
-<style>
-  /* Login sits on the shared animated background (.bg-anim, shared.css). */
-  #login-screen{ background:transparent; }
-  .login-card{ background:rgba(255,255,255,.9); backdrop-filter:blur(6px); }
 
-  /* ED&G lockup (bottom-right) — fixed brand identity. */
-  .edg-brand{position:fixed;right:40px;bottom:28px;z-index:6;text-align:right;pointer-events:none;animation:edgFadeUp .6s .5s ease both;}
-  .edg-brand .mark{font-size:30px;font-weight:800;color:#1a2744;line-height:1;}
-  .edg-brand .mark .amp{color:#12a0ad;}
-  .edg-brand .mark .tm{font-size:12px;font-weight:700;vertical-align:super;margin-left:1px;}
-  .edg-brand .name{margin-top:3px;font-size:12.5px;font-weight:700;color:#1a2744;}
-  .edg-brand .rule{height:3px;margin-top:7px;border-radius:2px;overflow:hidden;display:flex;}
-  .edg-brand .rule span{flex:1;}
-  .edg-brand .rule span:nth-child(1){background:#1a2744;}
-  .edg-brand .rule span:nth-child(2){background:#12a0ad;}
-  .edg-brand .rule span:nth-child(3){background:#4caf50;}
-  @keyframes edgFadeUp{from{opacity:0;transform:translateY(16px);}to{opacity:1;transform:translateY(0);}}
-  @media (max-width:520px){.edg-brand{right:20px;bottom:18px;}.edg-brand .mark{font-size:24px;}}
-</style>
 </head>
-<body>
-
-<div class="edg-brand" aria-hidden="true">
-  <div class="mark">ED<span class="amp">&amp;</span>G<span class="tm">&trade;</span></div>
-  <div class="name">Evolve Digital &amp; Governance</div>
-  <div class="rule"><span></span><span></span><span></span></div>
+<body class="sl">
+<div class="sl-split">
+<div class="sl-hero">
+  <div class="sl-tri a"></div><div class="sl-tri b"></div><div class="sl-tri c"></div><div class="sl-tri d"></div><div class="sl-tri e"></div><div class="sl-tri f"></div>
+  <div class="sl-orb o1"></div><div class="sl-orb o2"></div><div class="sl-orb o3"></div>
+  <div class="sl-beam" style="left:12%;height:60%;width:3px;background:linear-gradient(to bottom,transparent,rgba(18,160,173,.10),transparent);animation:slBeam 14s linear infinite"></div>
+  <div class="sl-beam" style="left:62%;height:55%;width:4px;background:linear-gradient(to bottom,transparent,rgba(76,175,80,.10),transparent);animation:slBeam 22s linear infinite;animation-delay:-9s"></div>
+  <div class="sl-p" style="width:4px;height:4px;background:rgba(95,182,224,.6);left:8%;animation:slUp1 12s linear infinite"></div>
+  <div class="sl-p" style="width:3px;height:3px;background:rgba(76,175,80,.7);left:25%;animation:slUp2 16s linear infinite;animation-delay:-4s"></div>
+  <div class="sl-p" style="width:5px;height:5px;background:rgba(18,160,173,.45);left:45%;animation:slUp1 14s linear infinite;animation-delay:-8s"></div>
+  <div class="sl-p" style="width:4px;height:4px;background:rgba(95,182,224,.55);left:66%;animation:slUp2 13s linear infinite;animation-delay:-6s"></div>
+  <div class="sl-p" style="width:3px;height:3px;background:rgba(76,175,80,.6);left:88%;animation:slUp1 17s linear infinite;animation-delay:-2s"></div>
+  <div class="sl-brand">
+    <div class="name">Stock Req</div>
+    <div class="sub">by ED&amp;G&trade;</div>
+    <div class="sl-live" id="sl-live" role="status"><i aria-hidden="true"></i><span id="sl-live-text">Live</span></div>
+  </div>
+  <div class="sl-logo"><img id="login-logo" alt="" style="display:none;" /></div>
+  <div class="sl-tagline">The right stock, on the right ward.</div>
 </div>
-
-<div id="login-screen">
-  <div class="login-card">
-    
-    <img id="login-logo" alt="" style="display:none; max-height:90px; max-width:240px; margin:0 auto 14px;" />
-    <h1>Stock Req</h1>
-    <div class="tag" style="margin-top:2px;">Digital ward medicines stock management</div>
-    <div class="tag" style="margin-top:2px; font-size:0.85em;">by ED&amp;G</div>
+<div class="sl-panel"><div class="sl-form">
+    <h1>Log in</h1>
+    <p class="lead">Welcome back</p>
     <label>User ID</label>
     <input type="text" id="login-userid" autocomplete="username" autocapitalize="off" spellcheck="false" />
     <label>Passcode</label>
     <input type="password" id="login-password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()" />
     <div class="login-error" id="login-error"></div>
     <button class="btn magenta" onclick="doLogin()">Log in</button>
-    <p class="muted" style="margin-top:16px; font-size:11.5px;">Sign in with your Trust-issued User ID.</p>
-    <p class="muted" style="margin-top:6px; font-size:12.5px;"><a href="forgot-password.html">Forgotten your password?</a></p>
-  </div>
+    <p class="muted" style="margin-top:16px; font-size:12.5px; text-align:center;"><a href="forgot-password.html">Forgotten your password?</a></p>
+    <p class="muted" style="margin-top:8px; font-size:12.5px; text-align:center;"><a href="#" onclick="openAccessibilitySettings(); return false;">Accessibility settings</a></p>
+</div></div>
 </div>
+<a class="sl-edg" href="https://home.edandg.com/" target="_blank" rel="noopener noreferrer" aria-label="ED&amp;G, visit home.edandg.com">
+  <div class="mark">ED<span class="amp">&amp;</span>G<span class="tm">&trade;</span></div>
+  <div class="name">Evolve Digital &amp; Governance</div>
+  <div class="rule"><span></span><span></span><span></span></div>
+</a>
 
 <div id="modal-root"></div>
 <div id="toast-root"></div>
@@ -80,6 +75,7 @@ sb.auth.getSession().then(async ({ data }) => {
   const errEl = document.getElementById('login-error');
   if (params.get('deactivated')) errEl.textContent = 'This account is inactive. Contact an administrator.';
   if (params.get('expired')) errEl.textContent = 'Your temporary passcode has expired. Contact an administrator for a new one.';
+  if (params.get('idle')) errEl.textContent = 'You were signed out after a period of inactivity. Please log in again.';
   if (params.get('ended')) errEl.textContent = 'Your session was ended by an administrator. Please log in again.';
 
   if (data.session) {
@@ -92,6 +88,35 @@ sb.auth.getSession().then(async ({ data }) => {
   }
 });
 
+
+// ---- Throttling: the server counts misses and refuses further guesses
+// (see record_login_failure / email_for_user_id). This only shows the wait.
+let loginLockTimer = null;
+function loginLockout(secs, errEl) {
+  const btn = document.querySelector('.sl-panel button.btn.magenta, button.btn.magenta');
+  let left = Math.max(1, Math.ceil(secs));
+  if (btn) btn.disabled = true;
+  const tick = () => {
+    if (left <= 0) {
+      clearInterval(loginLockTimer); loginLockTimer = null;
+      if (btn) btn.disabled = false;
+      errEl.textContent = 'You can try again now.';
+      return;
+    }
+    const m = Math.floor(left / 60), s = left % 60;
+    errEl.textContent = 'Too many incorrect attempts. Try again in ' + (m ? m + ' min ' : '') + s + ' sec.';
+    left--;
+  };
+  tick();
+  loginLockTimer = setInterval(tick, 1000);
+}
+async function loginMiss(userId, errEl) {
+  let wait = 0;
+  try { const r = await sb.rpc('record_login_failure', { lookup_user_id: userId }); wait = Number(r.data) || 0; } catch (e) {}
+  if (wait > 0) loginLockout(wait, errEl);
+  else errEl.textContent = 'Incorrect User ID or passcode.';
+}
+
 window.doLogin = async function () {
   const userId = document.getElementById('login-userid').value.trim();
   const passcode = document.getElementById('login-password').value;
@@ -99,12 +124,17 @@ window.doLogin = async function () {
   errEl.textContent = '';
   if (!userId || !passcode) { errEl.textContent = 'Enter your User ID and passcode.'; return; }
 
+  if (loginLockTimer) return;
+  try { const w = await sb.rpc('login_wait_seconds', { lookup_user_id: userId }); if (Number(w.data) > 0) { loginLockout(Number(w.data), errEl); return; } } catch (e) {}
   const { data: email, error: lookupError } = await sb.rpc('email_for_user_id', { lookup_user_id: userId });
-  if (lookupError || !email) { errEl.textContent = 'Incorrect User ID or passcode.'; return; }
+  if (isOutageError(lookupError)) { goUnavailable(); return; }
+  if (lookupError || !email) { await loginMiss(userId, errEl); return; }
 
   const { error: signInError } = await sb.auth.signInWithPassword({ email, password: passcode });
-  if (signInError) { errEl.textContent = 'Incorrect User ID or passcode.'; return; }
+  if (isOutageError(signInError)) { goUnavailable(); return; }
+  if (signInError) { await loginMiss(userId, errEl); return; }
 
+  try { await sb.rpc('clear_login_failures'); } catch (e) {}
   const { data: { user } } = await sb.auth.getUser();
   const { data: p } = await sb.from('profiles').select('*').eq('id', user.id).single();
   if (!p || !p.active) { errEl.textContent = 'This account is inactive. Contact an administrator.'; await sb.auth.signOut(); return; }
@@ -118,6 +148,10 @@ window.doLogin = async function () {
   // out of band, and clear its own kick before the heartbeat saw it.
   window.location.href = p.must_reset_password ? 'reset-password.html' : 'home.html';
 };
+</script>
+<script>
+(async () => { try { const { error } = await sb.from('system_settings').select('key').limit(1); if (error) throw error; }
+  catch (e) { document.getElementById('sl-live').classList.add('down'); document.getElementById('sl-live-text').textContent = 'Unavailable'; } })();
 </script>
 </body>
 </html>

@@ -51,7 +51,7 @@ async function renderWardHistory() {
     .gte('created_at', since).order('created_at', { ascending: false }).limit(50);
   if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
   const backLink = scoped ? `<a href="order.html?ward=${encodeURIComponent(requestedWardId)}" class="btn ghost small" style="margin-bottom:10px; display:inline-block;">\u2039 Back to ward</a><br/>` : '';
-  if (!sessionsData?.length) { body.innerHTML = `<div class="card">${backLink}<h2>${titleText}</h2><div class="empty">No orders yet.</div></div>`; return; }
+  if (!sessionsData?.length) { body.innerHTML = `<div class="card">${backLink}<h2>${titleText}</h2><div class="empty">No orders yet. ${esc(nextTopupHint())}</div></div>`; return; }
 
   const { data: lines } = await sb.from('orders').select('*').in('session_id', sessionsData.map(s => s.id));
   const nameById = await fetchNameMap(lines || []);

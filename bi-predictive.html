@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Stock Req — ED&G™ Business Intelligence: Predictive top-up</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="bi-predictive.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">Stock Req</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="vendor/chart.umd.min.js"></script>
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+async function renderPredictive() {
+  const el = document.getElementById('body');
+  const active = [...wards].filter(w => w.active !== false).sort((a, b) => a.name.localeCompare(b.name));
+  el.innerHTML = '<div class="card"><h2>Predictive top-up</h2><p class="muted">What each ward is offered by "Add your usual top-up items": its most-requested stocklist items over the last 90 days (top 20). A ward only gets the option when it is switched on in Wards and has more than 90 days of order history.</p><div id="pr-table">Loading\u2026</div></div>';
+  const since = new Date(); since.setDate(since.getDate() - 90);
+  const ids = active.map(w => w.id);
+  const [{ data: orders }, { data: lists }, { data: old }] = await Promise.all([
+    sb.from('orders').select('ward_id, medicine_name, parent_order_id').in('ward_id', ids).in('order_type', ['adhoc', 'topup']).gte('created_at', since.toISOString()).limit(50000),
+    sb.from('blist_items').select('ward_id, medicine_name').in('ward_id', ids).limit(50000),
+    sb.from('orders').select('ward_id').in('ward_id', ids).lte('created_at', since.toISOString()).limit(50000),
+  ]);
+  const hasHistory = new Set((old || []).map(o => o.ward_id));
+  const onList = {}; (lists || []).forEach(i => (onList[i.ward_id] ??= new Set()).add(i.medicine_name));
+  const counts = {};
+  (orders || []).forEach(o => {
+    if (o.parent_order_id || !onList[o.ward_id]?.has(o.medicine_name)) return;
+    ((counts[o.ward_id] ??= {})[o.medicine_name] = (counts[o.ward_id][o.medicine_name] || 0) + 1);
+  });
+  const top = id => Object.entries(counts[id] || {}).sort((a, b) => b[1] - a[1]).slice(0, 20);
+  document.getElementById('pr-table').innerHTML = `<table><thead><tr><th>Ward</th><th>Switched on</th><th>History</th><th>Suggested items</th><th>Offered to ward</th></tr></thead><tbody>
+    ${active.map(w => { const t = top(w.id); const on = !!w.predictive_ordering_enabled, h = hasHistory.has(w.id);
+      return `<tr><td>${esc(w.name)}</td><td>${on ? 'Yes' : 'No'}</td><td>${h ? '90+ days' : 'Building'}</td>
+      <td>${t.length ? `<details><summary>${t.length} item${t.length === 1 ? '' : 's'}</summary><div class="muted" style="font-size:13px; margin-top:4px;">${t.map(([n, c]) => esc(n) + ' <b>\u00d7' + c + '</b>').join('<br>')}</div></details>` : '<span class="muted">None yet</span>'}</td>
+      <td>${on && h && t.length ? '\u2705' : '\u2014'}</td></tr>`; }).join('')}
+  </tbody></table>`;
+}
+(async () => {
+  const p = await requireAuth({ require: () => canViewBi() && biEnabled() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = "<div id='body'></div>";
+  renderPredictive();
+})();
+</script>
+</body>
+</html>

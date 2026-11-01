@@ -16,21 +16,56 @@ const SUPABASE_URL = 'https://ngsbqzceypktdtpzqtfp.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_-rZ17jyE1QJvaUHY4t4qWw_zKJUYLox';
 const FN_BASE = 'https://ngsbqzceypktdtpzqtfp.functions.supabase.co';
 
-// The only place this needs bumping — a small tag reads this and
-// shows on every page, including pre-login, so it's visible however
-// far someone's got. "v3" marks the Stock Req name change;
-// bump on the next materially significant change, not every
-// small fix.
-const APP_VERSION = 'v3';
-
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
-(function renderVersionTag() {
-  const tag = document.createElement('div');
-  tag.textContent = `Stock Req ${APP_VERSION}`;
-  tag.style.cssText = 'position:fixed; right:10px; bottom:8px; font-size:10.5px; color:#9aa3af; z-index:1; pointer-events:none; font-family:inherit;';
-  document.body.appendChild(tag);
-})();
+// ---------- ACCESSIBILITY SETTINGS (colour modes + animation) ----------
+// Stored per device in localStorage. Colour only: no layout or text-size changes.
+const A11Y_MODES = [
+  ['default', 'Standard', 'The normal Stock Req colours', ['#f4f5f7', '#1a2744', '#0e7c86']],
+  ['bw', 'Black and white', 'Greyscale, no colour at all', ['#ffffff', '#000000', '#6b6b6b']],
+  ['blue', 'Blue contrast', 'Pale blue background, deep blue text', ['#d6e6f8', '#00205b', '#005eb8']],
+  ['beige', 'Beige contrast', 'Warm cream background, dark brown text', ['#f1e7cc', '#3a2f17', '#7a3e00']],
+  ['high', 'High contrast', 'Black background, light text', ['#000000', '#ffffff', '#ffd23f']],
+];
+function a11yGet() {
+  let c = 'default', m = null;
+  try { c = localStorage.getItem('sr_a11y_contrast') || 'default'; m = localStorage.getItem('sr_a11y_motion'); } catch (e) {}
+  if (!A11Y_MODES.some(x => x[0] === c)) c = 'default';
+  if (m === null) { try { m = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'off' : 'on'; } catch (e) { m = 'on'; } }
+  return { contrast: c, motion: m === 'off' ? 'off' : 'on' };
+}
+function a11yApply() {
+  const s = a11yGet(), r = document.documentElement;
+  if (s.contrast === 'default') r.removeAttribute('data-contrast'); else r.setAttribute('data-contrast', s.contrast);
+  r.setAttribute('data-motion', s.motion);
+}
+function a11ySet(patch) {
+  const s = Object.assign(a11yGet(), patch);
+  try { localStorage.setItem('sr_a11y_contrast', s.contrast); localStorage.setItem('sr_a11y_motion', s.motion); } catch (e) {}
+  a11yApply();
+}
+a11yApply();
+function openAccessibilitySettings() {
+  const s = a11yGet();
+  openModal(`<h3>Accessibility settings</h3>
+    <p class="muted" style="margin-top:0;">Choose colours that are comfortable to read. This applies on this device only.</p>
+    <fieldset class="a11y-set"><legend>Colours</legend>
+      ${A11Y_MODES.map(([id, name, desc, sw]) => `<label class="a11y-opt"><input type="radio" name="a11y-c" value="${id}" ${s.contrast === id ? 'checked' : ''} />
+        <span class="a11y-sw" style="background:${sw[0]}; color:${sw[1]}; border-color:${sw[2]};">Aa</span>
+        <span><b>${esc(name)}</b><small>${esc(desc)}</small></span></label>`).join('')}
+    </fieldset>
+    <fieldset class="a11y-set"><legend>Movement</legend>
+      <label class="a11y-opt"><input type="checkbox" id="a11y-motion" ${s.motion === 'off' ? 'checked' : ''} />
+        <span><b>Turn off animations</b><small>Removes the moving triangles and the header shimmer</small></span></label>
+    </fieldset>
+    <div class="actions"><button class="btn ghost" id="a11y-reset">Reset to standard</button><button class="btn magenta" onclick="closeModal()">Done</button></div>`);
+  document.querySelectorAll('input[name=a11y-c]').forEach(i => i.onchange = () => a11ySet({ contrast: i.value }));
+  document.getElementById('a11y-motion').onchange = (e) => a11ySet({ motion: e.target.checked ? 'off' : 'on' });
+  document.getElementById('a11y-reset').onclick = () => {
+    try { localStorage.removeItem('sr_a11y_contrast'); localStorage.removeItem('sr_a11y_motion'); } catch (e) {}
+    a11yApply(); closeModal();
+  };
+}
 
 // ED&G animated background (triangles / orbs / light beams / particles) —
 // the original Pharmacy Portal look, styled in shared.css (.bg-anim).
@@ -98,7 +133,7 @@ const canOrder      = () => !!profile?.can_order;
 const canProcess    = () => !!profile?.can_process;
 const canCheckPicking = () => isSuperuser() || !!profile?.can_check_picking;
 // Superuser/Developer can switch the second-person picking check off (System Settings).
-const pickingCheckRequired = () => systemSettings.picking_check_required !== 'false';
+const pickingCheckRequired = () => checkingEnabled() && systemSettings.picking_check_required !== 'false';
 // Wording used in the audit trail when the second-person check is switched off.
 const noCheckLabel = () => (systemSettings.no_check_label || 'Processed').trim() || 'Processed';
 // One sentence for the audit trail: "Processed by A on D, checked by B on D2"
@@ -120,6 +155,11 @@ const canViewDashboard = () => isSuperuser() || !!profile?.can_view_dashboard;
 // Paid features: hidden from everyone until a Developer switches them on in System settings.
 const insightsEnabled = () => systemSettings.feature_insights_enabled === 'true';
 const biEnabled = () => systemSettings.feature_bi_enabled === 'true';
+const aboveMaxEnabled = () => systemSettings.feature_abovemax_enabled === 'true';
+const alternativesEnabled = () => systemSettings.feature_alternatives_enabled === 'true';
+const checkingEnabled = () => systemSettings.feature_checking_enabled === 'true';
+const remindersEnabled = () => systemSettings.feature_reminders_enabled === 'true';
+const predictiveEnabled = () => systemSettings.feature_predictive_enabled === 'true';
 const canFreetextTempStock = () => !!profile?.can_freetext_temp_stock && canOrder();
 
 
@@ -194,6 +234,9 @@ function turnaroundDot(order) {
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function wardName(id) { return wards.find(w => w.id === id)?.name || ''; }
 function siteName(id) { return sites.find(s => s.id === id)?.name || ''; }
+// Full wording for badges people read (the dot alone is too easy to miss).
+function statusBadgeText(s) { return { pending:'Pending', complete:'Complete', out_of_stock:'To follow (out of stock)', part_supplied:'Part order, rest to follow', duplicate:'Duplicate order', non_urgent:'Non-urgent', pending_approval:'Awaiting approval', superseded:'Replaced by a later request', rejected:'Rejected' }[s] || s; }
+function statusBadge(cls, text) { return `<span class="badge ${esc(cls)}" style="display:inline-flex; align-items:center; gap:6px; white-space:normal; text-align:left;">${statusDot(cls, text)}${esc(text)}</span>`; }
 function statusLabel(s) { return { pending:'Pending', complete:'Complete', out_of_stock:'Out of stock', part_supplied:'Part supplied', duplicate:'Duplicate order', non_urgent:'Non-urgent', pending_approval:'Awaiting approval', superseded:'Superseded by reorder', rejected:'Rejected' }[s] || s; }
 // Pack size shown beside a medicine name. Prefers the size copied onto the
 // order line when it was placed; falls back to the catalog's current one.
@@ -222,21 +265,68 @@ function statusDot(status, label) {
   return `<span class="status-dot${shapeClass}" style="background:${color};" title="${esc(label)}"></span>`;
 }
 function statusLegendHtml() {
-  const entries = [
-    ['pending', 'Pending'], ['complete', 'Complete'], ['out_of_stock', 'Out of stock / to follow'],
-    ['part_supplied', 'Part supplied'], ['duplicate', 'Duplicate order'], ['non_urgent', 'Non-urgent'],
-    ['pending_approval', 'Awaiting approval'], ['superseded', 'Superseded by reorder'], ['rejected', 'Rejected'],
+  const groups = [
+    ['Waiting', [['pending', 'Pending', 'Sent to pharmacy, not dealt with yet'], ['pending_approval', 'Awaiting approval', 'Above max or restricted, a pharmacist must approve']]],
+    ['Done', [['complete', 'Complete', 'Sent in full']]],
+    ['Needs following up', [['out_of_stock', 'To follow (out of stock)', 'Out of stock, pharmacy is chasing it'], ['part_supplied', 'Part order', 'Some sent, the rest still to follow'], ['non_urgent', 'Non-urgent', 'Will be sent with a later delivery']]],
+    ['Closed, nothing sent', [['duplicate', 'Duplicate', 'Already ordered recently'], ['superseded', 'Replaced', 'A newer request took its place'], ['rejected', 'Rejected', 'Pharmacist declined it']]],
   ];
-  return `<div class="legend" style="display:flex; flex-wrap:wrap; gap:14px; margin-top:10px; padding-top:10px; border-top:1px solid var(--border);">
-    ${entries.map(([status, label]) => `<span style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-dim);">${statusDot(status, label)}${esc(label)}</span>`).join('')}
-    <span style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-dim);"><span class="status-dot shape-circle" style="background:#22C55E;"></span>Due today</span>
-    <span style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-dim);"><span class="status-dot shape-circle" style="background:#F97316;"></span>Next-day processing</span>
-  </div>`;
+  const item = ([status, label, mean]) => `<div class="lg-item">${statusDot(status, label)}<span><b>${esc(label)}</b><small>${esc(mean)}</small></span></div>`;
+  return `<details class="legend-key" open><summary>What the dots mean</summary>
+    <div class="lg-grid">
+      ${groups.map(([g, items]) => `<div class="lg-group"><div class="lg-head">${esc(g)}</div>${items.map(item).join('')}</div>`).join('')}
+      <div class="lg-group"><div class="lg-head">When it is processed</div>
+        <div class="lg-item"><span class="status-dot shape-circle" style="background:#22C55E;"></span><span><b>Due today</b><small>Will be processed today</small></span></div>
+        <div class="lg-item"><span class="status-dot shape-circle" style="background:#F97316;"></span><span><b>Next day</b><small>Sent after cut-off, processed tomorrow</small></span></div></div>
+    </div></details>`;
 }
 function attribution(label, name, iso) {
   if (!name && !iso) return '';
   return `<div class="attribution">${label ? esc(label) + ' ' : ''}${name ? esc(name) : ''}${name && iso ? ' · ' : ''}${iso ? fmtDate(iso) : ''}</div>`;
 }
+// ---------- INACTIVITY SIGN-OUT ----------
+// Signs the user out after systemSettings.idle_timeout_minutes (default 30, 0 = off),
+// with a one-minute warning. Unsent order drafts live in localStorage and survive this.
+let idleTimer = null, idleLast = Date.now(), idleWarnOpen = false;
+function startIdleWatch() {
+  const mins = parseFloat(systemSettings.idle_timeout_minutes ?? '30');
+  if (idleTimer) clearInterval(idleTimer);
+  if (!mins || mins <= 0) return;
+  const limit = mins * 60000, warnAt = Math.min(60000, limit / 2);
+  const bump = () => { if (!idleWarnOpen) idleLast = Date.now(); };
+  ['pointerdown', 'keydown', 'touchstart', 'scroll'].forEach(ev => window.addEventListener(ev, bump, { passive: true }));
+  idleTimer = setInterval(async () => {
+    const left = limit - (Date.now() - idleLast);
+    if (left <= 0) {
+      clearInterval(idleTimer);
+      try { await sb.auth.signOut(); } catch (e) {}
+      window.location.href = 'login.html?idle=1';
+    } else if (left <= warnAt && !idleWarnOpen) {
+      idleWarnOpen = true;
+      openModal(`<h3>Still there?</h3><p class="muted">You will be signed out in <b id="idle-left">${Math.ceil(left / 1000)}</b> seconds because there has been no activity. Anything you were building is kept on this device.</p>
+        <div class="actions"><button class="btn ghost" id="idle-out">Sign out now</button><button class="btn magenta" id="idle-stay">Stay signed in</button></div>`);
+      const tick = setInterval(() => {
+        const el = document.getElementById('idle-left');
+        if (!el) { clearInterval(tick); return; }
+        el.textContent = Math.max(0, Math.ceil((limit - (Date.now() - idleLast)) / 1000));
+      }, 500);
+      document.getElementById('idle-stay').onclick = () => { idleWarnOpen = false; idleLast = Date.now(); closeModal(); };
+      document.getElementById('idle-out').onclick = async () => { try { await sb.auth.signOut(); } catch (e) {} window.location.href = 'login.html'; };
+    }
+  }, 5000);
+}
+
+// "Next top-up: Larch Ward, Thursday" for empty states.
+function nextTopupHint(list = wards) {
+  let best = null;
+  (list || []).filter(w => w.active !== false).forEach(w => (w.topup_days || []).forEach(d => {
+    const idx = WEEKDAY_NAMES.indexOf(d); if (idx < 0) return;
+    let diff = (idx - new Date().getDay() + 7) % 7; if (diff === 0) diff = 7;
+    if (!best || diff < best.diff) best = { diff, ward: w.name, day: d };
+  }));
+  return best ? `Next top-up: ${best.ward}, ${best.day}.` : '';
+}
+
 function roleLabel(r) { return ROLE_LABEL[r] || r; }
 
 function baseUserIdFromName(fullName) {
@@ -475,14 +565,14 @@ function renderSessionCard(session, allLines, nameById = {}) {
       <table style="margin-top:8px;"><tbody>
         ${lines.map(o => {
           const statusHtml = o._displayStatusText
-            ? statusDot(o._displayStatusClass, o._displayStatusText)
-            : statusDot(o.status, statusLabel(o.status));
+            ? statusBadge(o._displayStatusClass, o._displayStatusText)
+            : statusBadge(o.status, statusBadgeText(o.status));
           const actionedAttr = o.processed_by
             ? attribution(statusLabel(o.status) + ' by', nameById[o.processed_by], o._latestUpdate || o.processed_at)
             : (o.approved_by ? attribution('Approved by', nameById[o.approved_by], o.approved_at) : '');
           return `<tr>
           <td>${esc(o.medicine_name)}${packTag(o)}${actionedAttr}${fulfilledNote(o)}</td><td style="text-align:right;">${o.quantity}</td>
-          <td style="text-align:right; width:40px;">${statusHtml}</td>
+          <td style="text-align:right;">${statusHtml}</td>
         </tr>`;
         }).join('')}
       </tbody></table>
@@ -597,9 +687,9 @@ function summariseRequestLine(o, childOf, nameById) {
     r.sent = (o.supplied_qty || 0) + rest; r.cls = 'part';
     if (child && child.status === 'complete') { r.label = 'Sent in full (in two parts)'; r.cls = 'done'; r.notes.push(`${o.supplied_qty} sent first, then ${child.quantity} on ${fmtDate(child.supplied_at || child.processed_at)}`); }
     else if (child && child.status === 'superseded') { r.label = 'Part supplied'; r.notes.push(`${o.supplied_qty} sent; remainder (${child.quantity}) resupplied under a later request`); }
-    else { r.label = 'Part supplied'; r.notes.push(`${o.supplied_qty || 0} sent, <b>${child ? child.quantity : o.quantity - (o.supplied_qty || 0)} still to follow</b>${by}${when}`); }
+    else { r.label = 'Part order, rest to follow'; r.notes.push(`${o.supplied_qty || 0} sent, <b>${child ? child.quantity : o.quantity - (o.supplied_qty || 0)} still to follow</b>${by}${when}`); }
   } else if (o.status === 'out_of_stock') {
-    r.cls = 'oos'; r.label = 'Out of stock'; r.notes.push(`Nothing sent — on the to-follow list${by}${when}`);
+    r.cls = 'oos'; r.label = 'To follow (out of stock)'; r.notes.push(`Nothing sent — on the to-follow list${by}${when}`);
   } else if (o.status === 'pending' || o.status === 'pending_approval') {
     r.cls = 'pend'; r.notes.push(o.status === 'pending' ? 'Not yet actioned' : 'Waiting for above-max approval');
   } else {
@@ -677,11 +767,26 @@ async function openRequestSummary(sessionId) {
 // redirects home with a message if the page's required capability isn't
 // met — RLS is still the real enforcement, this is just so nobody lands
 // on a blank/broken page for a function they can't use.
+// A failed connection (network down, Supabase unreachable, gateway error) is not the same as a
+// wrong password or a missing profile, so it must never sign anyone out.
+function isOutageError(err) {
+  if (!err) return false;
+  if (err instanceof TypeError) return true;
+  const m = String(err.message || err).toLowerCase();
+  const st = String(err.status || err.code || '');
+  return /failed to fetch|networkerror|network request failed|load failed|fetch failed|timed out|timeout/.test(m)
+    || /unexpected token|<html|bad gateway|service unavailable|gateway time/.test(m) || /^5\d\d$/.test(st);
+}
+function goUnavailable() {
+  const here = (location.pathname.split('/').pop() || 'home.html') + (location.hash || '');
+  location.href = 'unavailable.html?back=' + encodeURIComponent(here);
+}
 async function requireAuth(options = {}) {
   const { data: { session } } = await sb.auth.getSession();
   if (!session) { window.location.href = 'login.html'; return null; }
 
   const { data: p, error } = await sb.from('profiles').select('*').eq('id', session.user.id).single();
+  if (isOutageError(error)) { goUnavailable(); return null; }
   if (error || !p) { await sb.auth.signOut(); window.location.href = 'login.html'; return null; }
 
   if (!p.active) {
@@ -734,15 +839,26 @@ async function requireAuth(options = {}) {
     return null;
   }
 
-  document.querySelectorAll('[data-who-name]').forEach(el => el.textContent = `${profile.full_name} · ${roleLabel(profile.role)}`);
+  document.querySelectorAll('[data-who-name]').forEach(el => {
+    const ini = (profile.initials || profile.full_name.split(/\s+/).map(w => w[0]).join('').slice(0, 3)).toUpperCase();
+    el.innerHTML = `<span class="who-av" title="${esc(profile.full_name)}">${esc(ini)}</span><span class="who-txt"><b>${esc(profile.full_name)}</b><small>${esc(roleLabel(profile.role))}</small></span>`;
+  });
   applyTrustLogo();
   document.querySelectorAll('[data-ward-context]').forEach(el => el.textContent = canOrder() && myWards.length
     ? myWards.map(w => w.name).join(', ')
     : (isSuperuser() ? 'Full system access' : isAdminRole() ? 'Admin' : isGovernance() ? 'Governance — read only' : ''));
   wireLogout();
+  document.querySelectorAll('header.topbar .who').forEach(w => {
+    if (w.querySelector('[data-a11y]')) return;
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'a11y-btn'; b.setAttribute('data-a11y', '');
+    b.title = 'Accessibility settings'; b.setAttribute('aria-label', 'Accessibility settings');
+    b.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="4.5" r="1.8"/><path d="M5 8.5l7 1.5 7-1.5M12 10v4.5M9 21l3-6.5 3 6.5"/></svg>';
+    b.onclick = openAccessibilitySettings;
+    w.insertBefore(b, w.querySelector('[data-logout]') || null);
+  });
+  startIdleWatch();
   buildSideNav();
   loadBanner();
-  maybePromptForEmail();
   startNewOrderPolling();
   startSessionHeartbeat();
   renderPageNav(document.body.dataset.page || '');
@@ -846,10 +962,10 @@ function bnLinkify(escaped) {
     return `<a href="${clean}" target="_blank" rel="noopener noreferrer">${clean}</a>${trail}`;
   });
 }
-const BN_ICON = { info: '\u2139\ufe0f', success: '\u2705', warning: '\u26a0\ufe0f', urgent: '\ud83d\udea8' };
+const BN_CHIP = { info: 'NOTICE', success: 'UPDATE', warning: 'HEADS UP', urgent: 'URGENT' };
 function bannerHtml(b) {
   const sev = ['info', 'success', 'warning', 'urgent'].includes(b.severity) ? b.severity : 'info';
-  return `<div class="hbanner ${sev}" role="status"><span class="ic" aria-hidden="true">${BN_ICON[sev]}</span><div class="tx">${bnLinkify(esc(b.message))}</div></div>`;
+  return `<div class="hbanner ${sev}" role="status"><span class="chip">${BN_CHIP[sev]}</span><div class="tx">${bnLinkify(esc(b.message))}</div></div>`;
 }
 async function loadBanner() {
   const root = document.getElementById('banner-root');
@@ -911,7 +1027,6 @@ function buildNavLinks() {
     links.push({ href: 'system-settings.html', label: 'System settings', group: 'Admin' });
     links.push({ href: 'logs.html', label: 'Logs', group: 'Admin' });
     links.push({ href: 'audit.html', label: 'Audit', group: 'Governance' });
-    if (insightsEnabled()) links.push({ href: 'insights.html', label: 'Insights', group: 'Insights' });
   } else {
     // Below the two fixed top tiers, every one of these is its own
     // tickbox — an account can hold any combination, so each link is
@@ -924,7 +1039,12 @@ function buildNavLinks() {
     if (canManageStocklists()) links.push({ href: 'stocklists.html', label: 'Stocklists', group: 'Admin' });
     if (isAdminRole()) links.push({ href: 'topup-days.html', label: 'Top-up days', group: 'Admin' });
   }
-  if (canViewBi() && biEnabled()) links.push({ href: 'bi-insights.html', label: 'BI Insights', group: 'Insights' });
+  if (insightsEnabled() && canViewDashboard()) links.push({ href: 'insights.html', label: 'Insights', group: 'Insights' });
+  if (canViewBi() && biEnabled()) {
+    links.push({ href: 'bi-analytics.html', label: 'Analytics', group: 'ED&G™ Business Intelligence Suite' });
+    links.push({ href: 'bi-insights.html', label: 'Item usage', group: 'ED&G™ Business Intelligence Suite' });
+    links.push({ href: 'bi-predictive.html', label: 'Predictive top-up', group: 'ED&G™ Business Intelligence Suite' });
+  }
   if (isGovernance()) links.push({ href: 'audit.html', label: 'Audit', group: 'Governance' });
   if (canPostBanners()) links.push({ href: 'notifications.html', label: 'Banners', group: isSuperuser() ? 'Admin' : 'Banners' });
   return links;
@@ -942,11 +1062,16 @@ function buildAreaTiles() {
     Admin: svg('<path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>'),
     Governance: svg('<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/><path d="M8 10.5l2 2 3-3.5"/>'),
     Insights: svg('<path d="M4 20V11M10 20V5M16 20v-6M2 20h20"/>'),
+    'ED&G™ Business Intelligence Suite': svg('<path d="M3 20h18"/><path d="M5 16l4-5 4 3 6-8"/><circle cx="19" cy="6" r="1.6"/>'),
   };
   return groups.map(g => ({ group: g, icon: iconFor[g] || '•', firstHref: links.find(l => l.group === g).href, label: g === 'Admin' ? (isSuperuser() ? 'System Admin' : 'User Management') : g }));
 }
 
 const PAGE_META = {
+  'insights.html': ['\ud83d\udcca', 'Insights', 'Orders due today and how many have been processed.'],
+  'bi-analytics.html': ['\ud83d\udcc8', 'ED&G™ Business Intelligence Suite', 'Volumes, turnaround, breaches, trends and top-up compliance.'],
+  'bi-insights.html': ['\ud83d\udcca', 'ED&G™ Business Intelligence Suite', 'Most-ordered items, seasonal patterns and who is ordering what.'],
+  'bi-predictive.html': ['\u2728', 'ED&G™ Business Intelligence Suite', 'What each ward is offered by predictive top-up.'],
   'sites.html': ['\ud83c\udfe5', 'Sites', 'Hospital sites that wards belong to.'],
   'wards.html': ['\ud83d\udecf\ufe0f', 'Wards', 'Create wards, set top-up days, suspend them and control alternative-stock swaps.'],
   'users.html': ['\ud83d\udc65', 'Users', 'Invite staff with permissions and wards pre-set, and manage existing accounts.'],
@@ -1143,6 +1268,7 @@ function isWithinTopupWindow(now = new Date()) {
 let topupCountdownTimer = null;
 
 async function renderTopupBanner(ward, mountEl) {
+  if (!remindersEnabled()) { if (mountEl) mountEl.innerHTML = ''; return; }
   if (topupCountdownTimer) { clearInterval(topupCountdownTimer); topupCountdownTimer = null; }
   if (!ward || !mountEl) { if (mountEl) mountEl.innerHTML = ''; return; }
 

@@ -46,6 +46,12 @@
     toast("You don't have access to that page.", true);
   }
 
+  const TILE_DESC = {
+    'Create New Order': 'Request stock for a ward', 'Process awaiting orders': 'Pick and send requests',
+    'Complete final check': 'Independent second check', 'Above max stock waiting for approval': 'Approve or reject requests',
+    'Admin': 'Users, wards and stocklists', 'Governance': 'Audit trail', 'Insights': 'Due today and processed',
+    'ED&G™ Business Intelligence Suite': 'Trends and predictive top-up', 'Banners': 'Post notices to everyone',
+  };
   const tiles = buildAreaTiles();
 
   const showDash = canViewDashboard();
@@ -61,14 +67,15 @@
   }
 
   main.innerHTML = `
+    <div id="setup-mount"></div>
     <div id="dashboard-mount"></div>
     ${tiles.length ? `<div class="card">
       <h2>What would you like to do?</h2>
-      <div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:10px;">
+      <div class="tile-list">
         ${tiles.map(t => `
           <a href="${t.firstHref}" class="home-tile">
-            <div class="icon">${t.icon}</div>
-            <div class="label">${esc(t.label)}</div>
+            <span class="ic">${t.icon}</span>
+            <span class="tx"><span class="label">${esc(t.label)}</span><span class="sub">${esc(TILE_DESC[t.group] || '')}</span></span>
           </a>`).join('')}
       </div>
     </div>` : ''}`;
@@ -84,6 +91,30 @@
       if (count) checkTile.insertAdjacentHTML('beforeend', `<span class="tile-badge" title="${count} waiting for a check">${count}</span>`);
     } catch (e) { /* badge is optional */ }
   }
+})();
+
+// First-run checklist for Superusers/Developer: shows what's still missing before go-live.
+(async () => {
+  if (!isSuperuser()) return;
+  try { if (localStorage.getItem('sr_setup_hidden')) return; } catch (e) {}
+  const count = async (t) => { const { count, error } = await sb.from(t).select('id', { count: 'exact', head: true }); return error ? null : (count || 0); };
+  const [nSites, nWards, nItems, nUsers] = await Promise.all([count('sites'), count('wards'), count('blist_items'), count('profiles')]);
+  const steps = [
+    ['Add your sites', nSites > 0, 'sites.html'],
+    ['Create wards', nWards > 0, 'wards.html'],
+    ['Build stocklists', nItems > 0, 'stocklists.html'],
+    ['Invite your staff', nUsers > 2, 'users.html#tab=add'],
+  ];
+  if (steps.some(s => s[1] === null || false) || steps.every(s => s[1])) return;
+  let mount = null; for (let i = 0; i < 20 && !(mount = document.getElementById('setup-mount')); i++) await new Promise(r => setTimeout(r, 150));
+  if (!mount) return;
+  const done = steps.filter(s => s[1]).length;
+  mount.innerHTML = `<div class="card"><h2>Getting ready to go live <span class="muted" style="font-weight:400; font-size:13px;">${done} of ${steps.length} done</span></h2>
+    <div style="display:flex; flex-direction:column; gap:8px; margin-top:8px;">
+      ${steps.map(([label, ok, href]) => `<a href="${href}" style="display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit; padding:8px 10px; border:1px solid var(--border); border-radius:8px;"><span style="width:20px; height:20px; border-radius:50%; flex:none; display:inline-flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; ${ok ? 'background:var(--teal); color:#fff;' : 'border:2px solid var(--border);'}">${ok ? '\u2713' : ''}</span><span style="${ok ? 'text-decoration:line-through; opacity:.6;' : 'font-weight:600;'}">${esc(label)}</span></a>`).join('')}
+    </div>
+    <button class="btn ghost small" id="setup-hide" style="margin-top:12px;">Hide this</button></div>`;
+  document.getElementById('setup-hide').onclick = () => { try { localStorage.setItem('sr_setup_hidden', '1'); } catch (e) {} mount.innerHTML = ''; };
 })();
 </script>
 </body>

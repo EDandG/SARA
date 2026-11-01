@@ -131,7 +131,7 @@ async function renderSessionDetail() {
           <td>${o.status === 'pending' ? turnaroundDot(o) : ''}</td>
           <td>${esc(o.medicine_name)}${packTag(o)} ${o.approved_by ? `<span class="badge complete">\u2713 Pharmacist-approved</span>` : ''}${approvedAttr}${processedAttr}${dispositionAttr}</td>
           <td>${o.quantity}</td>
-          <td><span class="badge ${o.status}">${statusLabel(o.status)}</span></td>
+          <td>${statusBadge(o.status, statusBadgeText(o.status))}</td>
           ${readOnly ? '' : `<td style="text-align:right; white-space:nowrap;">
             ${o.status === 'pending' ? `
               <button class="btn small ghost" data-complete="${o.id}">Mark complete</button>

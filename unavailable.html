@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>Stock Req — Temporarily unavailable</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<link rel="stylesheet" href="shared.css" />
+<script>
+// Pick up the person's accessibility choices (set in Accessibility settings) before first paint.
+(function(){try{var c=localStorage.getItem('sr_a11y_contrast'),m=localStorage.getItem('sr_a11y_motion');
+if(c&&c!=='default')document.documentElement.setAttribute('data-contrast',c);
+document.documentElement.setAttribute('data-motion',m?m:(matchMedia('(prefers-reduced-motion: reduce)').matches?'off':'on'));}catch(e){}})();
+</script>
+<style>
+  .un-state{display:inline-flex;align-items:center;gap:8px;margin-top:6px;padding:5px 14px;border-radius:999px;font-size:12.5px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;background:rgba(245,180,0,.16);border:1px solid rgba(245,180,0,.55);color:#ffd873;}
+  .un-state i{width:9px;height:9px;border-radius:50%;background:#f5b400;animation:slPulse 1.8s ease-in-out infinite;}
+  .un-state.up{background:rgba(46,160,67,.18);border-color:rgba(46,160,67,.6);color:#8be19a;}
+  .un-state.up i{background:#2ea043;animation:none;}
+  .sl-form h1{font-size:26px;margin-top:14px;}
+  .un-note{margin-top:20px;padding:12px 14px;border:1px solid #4a5d88;border-radius:10px;background:rgba(255,255,255,.06);font-size:13.5px;color:#dbe2f0;line-height:1.5;}
+  .un-note b{color:#fff;}
+  .un-meta{margin-top:14px;font-size:12.5px;color:#c7d0e4;}
+  .sl-form .btn{margin-top:18px;}
+</style>
+</head>
+<body class="sl">
+<div class="sl-split">
+<div class="sl-hero">
+  <div class="sl-tri a"></div><div class="sl-tri b"></div><div class="sl-tri c"></div><div class="sl-tri d"></div><div class="sl-tri e"></div><div class="sl-tri f"></div>
+  <div class="sl-orb o1"></div><div class="sl-orb o2"></div><div class="sl-orb o3"></div>
+  <div class="sl-brand">
+    <div class="name">Stock Req</div>
+    <div class="sub">by ED&amp;G&trade;</div>
+  </div>
+  <div class="sl-tagline">Back shortly.</div>
+</div>
+<div class="sl-panel"><div class="sl-form">
+  <div class="un-state" id="state" role="status" aria-live="polite"><i aria-hidden="true"></i><span id="state-text">Checking</span></div>
+  <h1 id="title">Stock Req is temporarily unavailable</h1>
+  <p class="lead" id="lead">We can't reach the service right now. This page checks again automatically and takes you back as soon as it is working.</p>
+  <div class="un-note"><b>Need stock urgently?</b> Follow your ward's downtime procedure or contact your pharmacy team directly. An unsent adhoc order is kept on this device.</div>
+  <button class="btn magenta" id="retry">Try again now</button>
+  <p class="un-meta" id="meta"></p>
+  <p class="muted" style="margin-top:8px; font-size:12.5px;"><a href="login.html">Back to log in</a></p>
+</div></div>
+</div>
+<a class="sl-edg" href="https://home.edandg.com/" target="_blank" rel="noopener noreferrer" aria-label="ED&amp;G, visit home.edandg.com">
+  <div class="mark">ED<span class="amp">&amp;</span>G<span class="tm">&trade;</span></div>
+  <div class="name">Evolve Digital &amp; Governance</div>
+  <div class="rule"><span></span><span></span><span></span></div>
+</a>
+<script>
+// Self-contained on purpose: it must work when the rest of the app can't load data.
+const URL_ = 'https://ngsbqzceypktdtpzqtfp.supabase.co';
+const KEY_ = 'sb_publishable_-rZ17jyE1QJvaUHY4t4qWw_zKJUYLox';
+const back = (() => { const b = new URLSearchParams(location.search).get('back') || ''; return /^[a-z0-9-]+\.html(#[\w=&-]*)?$/i.test(b) ? b : 'home.html'; })();
+const stateEl = document.getElementById('state'), stateText = document.getElementById('state-text'), meta = document.getElementById('meta'), retry = document.getElementById('retry');
+let wait = 15, tries = 0, timer = null, busy = false;
+async function reachable() {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const r = await fetch(URL_ + '/auth/v1/health', { headers: { apikey: KEY_ }, signal: ctl.signal, cache: 'no-store' });
+    return r.ok;
+  } catch (e) { return false; } finally { clearTimeout(t); }
+}
+async function check() {
+  if (busy) return; busy = true; clearInterval(timer);
+  stateText.textContent = 'Checking'; retry.disabled = true;
+  const ok = await reachable(); tries++; busy = false; retry.disabled = false;
+  if (ok) {
+    stateEl.classList.add('up'); stateText.textContent = 'Back online';
+    document.getElementById('title').textContent = 'Stock Req is back';
+    document.getElementById('lead').textContent = 'Taking you back now…';
+    setTimeout(() => { location.href = back; }, 1200); return;
+  }
+  stateEl.classList.remove('up'); stateText.textContent = 'Unavailable';
+  wait = Math.min(15 + tries * 5, 60);
+  let left = wait; const stamp = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const tick = () => { meta.textContent = `Last checked ${stamp}. Checking again in ${left}s.`; if (left-- <= 0) check(); };
+  tick(); timer = setInterval(tick, 1000);
+}
+retry.onclick = () => { clearInterval(timer); check(); };
+check();
+</script>
+</body>
+</html>

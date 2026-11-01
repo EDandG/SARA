@@ -8,6 +8,12 @@
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
+<style>
+  .cart-bar{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;align-items:center;justify-content:center;gap:16px;padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px));background:#1a2744;color:#fff;box-shadow:0 -6px 20px rgba(0,0,0,.18);font-weight:700;}
+  .cart-bar[hidden]{display:none;}
+  .cart-bar button{min-width:150px;}
+  .draft-note{display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;margin:12px auto 0;padding:10px 14px;max-width:520px;border:1px solid var(--border);border-radius:10px;font-size:13.5px;}
+</style>
 </head>
 <body data-page="order.html">
 <div id="app">
@@ -115,7 +121,7 @@ async function isWardOverdueForTopup(wardId) {
 }
 
 async function openTempStockModal() {
-  const { data: catalogRows } = await sb.from('drug_catalog').select('medicine_name, pack_size').order('medicine_name');
+  const { data: catalogRows } = await sb.from('drug_catalog').select('medicine_name, pack_size').eq('hidden', false).order('medicine_name');
   const catalog = catalogRows || [];
   openModal(`
     <h3>Temp stock</h3>
@@ -145,7 +151,7 @@ async function renderWardOrder() {
 
   // Single-ward accounts skip straight past the tile step — there's
   // no real choice to make, so showing it would just be an extra click.
-  if (!orderWardId && myWards.length === 1) orderWardId = myWards[0].id;
+  if (!orderWardId && myWards.length === 1 && !readDraft()) orderWardId = myWards[0].id;
 
   if (!orderWardId) { renderWardTiles(); return; }
   if (!orderType) { await renderOrderTypeChoice(); return; }
@@ -153,22 +159,54 @@ async function renderWardOrder() {
   await renderOrderBuilder();
 }
 
+// ---------- unsent adhoc order drafts (kept on this device so a timeout doesn't lose them) ----------
+const draftKey = () => `sr_draft_${profile?.id || 'x'}`;
+function saveDraft() {
+  try { if (orderType === 'adhoc' && orderWardId && cart.length) localStorage.setItem(draftKey(), JSON.stringify({ ward: orderWardId, type: 'adhoc', cart, ts: Date.now() })); } catch (e) {}
+}
+function clearDraft() { try { localStorage.removeItem(draftKey()); } catch (e) {} }
+function readDraft() {
+  try {
+    const d = JSON.parse(localStorage.getItem(draftKey()) || 'null');
+    if (!d || !d.cart?.length || Date.now() - d.ts > 12 * 3600 * 1000 || !myWards.some(w => w.id === d.ward)) return null;
+    return d;
+  } catch (e) { return null; }
+}
+
 function renderWardTiles() {
   const body = document.getElementById('body');
+  const sorted = myWards.slice().sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   body.innerHTML = `
     <div class="card" style="text-align:center;">
       <h2>Make a new stock request</h2>
       <p class="muted">Choose a ward to request stock for.</p>
-      <div style="display:flex; flex-wrap:wrap; justify-content:center; gap:12px; margin-top:14px;">
-        ${myWards.slice().sort((a, b) => a.name.localeCompare(b.name)).map(w => `
-          <button class="btn ghost" data-ward-tile="${w.id}" style="width:160px; padding:20px 12px; font-size:14px; font-weight:600;">${esc(w.name)}</button>
-        `).join('')}
+      <div style="max-width:420px; margin:14px auto 0;">
+        <input type="search" id="ward-search" placeholder="Search wards${sorted.length > 1 ? ' (' + sorted.length + ')' : ''}\u2026" autocomplete="off" aria-label="Search wards" />
       </div>
+      <div id="ward-tiles" style="display:flex; flex-wrap:wrap; justify-content:center; gap:12px; margin-top:14px;"></div>
     </div>`;
-  body.querySelectorAll('[data-ward-tile]').forEach(b => b.onclick = () => {
-    orderWardId = b.dataset.wardTile;
-    renderWardOrder();
-  });
+  const draft = readDraft();
+  if (draft) {
+    const wn = myWards.find(w => w.id === draft.ward)?.name || 'a ward';
+    const note = document.createElement('div'); note.className = 'draft-note';
+    note.innerHTML = `<span>You have an unsent order for <b>${esc(wn)}</b> (${draft.cart.length} item${draft.cart.length === 1 ? '' : 's'}).</span><button class="btn magenta small" id="draft-resume">Resume</button><button class="btn ghost small" id="draft-discard">Discard</button>`;
+    body.querySelector('.card').insertBefore(note, body.querySelector('.card > div[style*="max-width:420px"]'));
+    document.getElementById('draft-resume').onclick = () => { cart = draft.cart; orderWardId = draft.ward; orderType = 'adhoc'; renderWardOrder(); };
+    document.getElementById('draft-discard').onclick = () => { try { localStorage.removeItem(draftKey()); } catch (e) {} note.remove(); };
+  }
+  const tiles = document.getElementById('ward-tiles'), search = document.getElementById('ward-search');
+  const paint = () => {
+    const q = search.value.trim().toLowerCase();
+    const list = sorted.filter(w => !q || w.name.toLowerCase().includes(q));
+    tiles.innerHTML = list.length ? list.map(w => `
+      <button class="btn ghost" data-ward-tile="${w.id}" style="width:160px; padding:20px 12px; font-size:14px; font-weight:600;">${esc(w.name)}</button>`).join('')
+      : `<div class="empty" style="width:100%;">No wards match "${esc(search.value.trim())}".</div>`;
+    tiles.querySelectorAll('[data-ward-tile]').forEach(b => b.onclick = () => { orderWardId = b.dataset.wardTile; renderWardOrder(); });
+  };
+  search.oninput = paint;
+  search.onkeydown = (e) => { if (e.key === 'Enter') { const only = tiles.querySelectorAll('[data-ward-tile]'); if (only.length === 1) only[0].click(); } };
+  paint();
+  if (sorted.length > 6) search.focus();
 }
 
 async function renderOrderTypeChoice() {
@@ -215,25 +253,25 @@ async function renderOrderBuilder() {
 
   const currentWard = wards.find(w => w.id === orderWardId);
   const topupDays = currentWard?.topup_days || [];
-  const wardAllowsAboveMax = currentWard?.allow_above_max_adhoc !== false;
+  const wardAllowsAboveMax = aboveMaxEnabled() && currentWard?.allow_above_max_adhoc !== false;
 
   const lockHolderName = await checkTopupLock(orderWardId);
   const lockedOut = !!lockHolderName;
 
   let showPredictiveOption = false;
-  if (orderType === 'topup' && currentWard?.predictive_ordering_enabled && !lockedOut) {
+  if (orderType === 'topup' && predictiveEnabled() && currentWard?.predictive_ordering_enabled && !lockedOut) {
     showPredictiveOption = await wardHasEnoughHistory(orderWardId);
   }
 
   let showOverdueFillOption = false;
-  if (orderType === 'topup' && systemSettings.overdue_topup_preview_enabled === 'true' && !lockedOut) {
+  if (orderType === 'topup' && remindersEnabled() && systemSettings.overdue_topup_preview_enabled === 'true' && !lockedOut) {
     showOverdueFillOption = await isWardOverdueForTopup(orderWardId);
   }
 
   const goBack = async () => {
     if (cart.length) {
       confirmDialog('Change ward or order type', 'This will discard the items added so far. Continue?', 'Discard and go back', async () => {
-        cart = []; await releaseTopupLock(orderWardId); orderWardId = null; orderType = null; renderWardOrder();
+        cart = []; clearDraft(); await releaseTopupLock(orderWardId); orderWardId = null; orderType = null; renderWardOrder();
       }, true);
     } else {
       await releaseTopupLock(orderWardId);
@@ -272,6 +310,7 @@ async function renderOrderBuilder() {
         <button class="btn ghost" id="cart-cancel" disabled>Cancel order</button>
       </div>
     </div>
+    <div id="cart-bar" class="cart-bar" hidden><span id="cart-bar-text"></span><button class="btn magenta" id="cart-bar-submit">Submit order</button></div>
     <div class="card">
       <h2>Recent submissions from this ward</h2>
       <div id="ord-recent">Loading…</div>
@@ -438,6 +477,13 @@ async function renderOrderBuilder() {
     const submitBtn = document.getElementById('cart-submit');
     const cancelBtn = document.getElementById('cart-cancel');
     countEl.textContent = cart.length ? `(${cart.length} item${cart.length > 1 ? 's' : ''})` : '';
+    const bar = document.getElementById('cart-bar');
+    if (bar) {
+      bar.hidden = !cart.length;
+      document.getElementById('cart-bar-text').textContent = `${cart.length} item${cart.length === 1 ? '' : 's'} \u00b7 ${cart.reduce((n, c) => n + (c.quantity || 0), 0)} units`;
+      document.getElementById('cart-bar-submit').onclick = () => document.getElementById('cart-submit').click();
+    }
+    saveDraft();
     submitBtn.disabled = !cart.length;
     cancelBtn.disabled = !cart.length;
     if (!cart.length) { listEl.innerHTML = `<div class="empty">No items added yet — search above to build the order.</div>`; return; }
@@ -522,7 +568,7 @@ async function renderOrderBuilder() {
     toast(anyAboveMax
       ? `Order submitted — ${cart.length} item${cart.length > 1 ? 's' : ''} (some await pharmacist approval).`
       : `Order submitted — ${cart.length} item${cart.length > 1 ? 's' : ''}.`);
-    cart = [];
+    cart = []; clearDraft();
     await releaseTopupLock(orderWardId);
     renderCart();
     loadRecent();
@@ -531,7 +577,7 @@ async function renderOrderBuilder() {
   document.getElementById('cart-cancel').onclick = async () => {
     if (!cart.length) return;
     confirmDialog('Cancel this order', 'Discard everything added so far? This can\'t be undone.', 'Discard order', async () => {
-      cart = [];
+      cart = []; clearDraft();
       await releaseTopupLock(orderWardId);
       renderCart();
       if (orderType === 'topup') renderWardOrder();
