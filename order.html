@@ -304,8 +304,8 @@ async function renderOrderBuilder() {
       ${topupDays.length ? `<p class="muted" style="margin-bottom:10px;">Your top up days are: <b>${esc(topupDays.join(', '))}</b></p>` : ''}
       ${showPredictiveOption ? `<button class="btn ghost small" id="ord-predictive" style="margin-bottom:10px;">${uiIcon('sparkle', 15)} Add your usual top-up items</button>
         <p class="muted" style="margin-top:-6px; margin-bottom:10px; font-size:11.5px;">Based on what this ward has ordered most over the last 3 months. Everything's added at quantity 1 — adjust or remove as needed before submitting.</p>` : ''}
-      ${showOverdueFillOption ? `<button class="btn ghost small" id="ord-overdue-fill" style="margin-bottom:10px;">${uiIcon('warn', 15)} Fill overdue top-up (full stocklist at max)</button>
-        <p class="muted" style="margin-top:-6px; margin-bottom:10px; font-size:11.5px;">This ward's top-up wasn't submitted on time. This adds every current stocklist item at its usual max quantity — adjust or remove before submitting.</p>` : ''}
+      ${(orderType === 'topup' && !lockedOut && items?.length) ? `<div class="ord-tools"><button class="btn ghost" id="ord-overdue-fill">Request max</button>
+        <span class="muted" style="font-size:12.5px;">${showOverdueFillOption ? 'This ward\u2019s top-up is overdue. ' : ''}Adds every stocklist item at its usual maximum. Adjust or remove anything before submitting.</span></div>` : ''}
       ${lockedOut ? '' : (!items?.length ? `<div class="empty">No stocklist has been set up for this ward yet. Contact pharmacy or admin.</div>` : `
       <label>Search medicine</label>
       <div class="searchbox">
@@ -391,7 +391,8 @@ async function renderOrderBuilder() {
     });
     renderCart();
     if (!added) toast('Every stocklist item is already in this order.');
-    else toast(`Added ${added} item${added > 1 ? 's' : ''} at usual max quantity \u2014 adjust as needed.`);
+    else toast(`Added ${added} item${added > 1 ? 's' : ''} at usual max quantity \u2014 adjust or remove as needed.`);
+    overdueFillBtn.disabled = false; overdueFillBtn.textContent = 'Request max';
   };
 
   renderCart();
@@ -502,23 +503,26 @@ async function renderOrderBuilder() {
     listEl.innerHTML = cart.map((c, i) => {
       const overMax = orderType === 'adhoc' && !c.isTemp && c.quantity > c.max_qty;
       const capsAtMax = (orderType === 'topup' || (orderType === 'adhoc' && !wardAllowsAboveMax)) && !c.isTemp;
+      const it = (items || []).find(x => x.medicine_name === c.medicine_name);
+      const range = c.isTemp ? 'Temp stock' : `Min ${it?.min_qty ?? '\u2014'} \u00b7 Max ${c.max_qty}`;
+      const last = c.quantity <= 1;
       return `
-      <div style="width:100%; margin-top:8px;">
-        <div class="selected-pill" style="display:flex; width:100%;">
-          <b style="flex:1;">${esc(c.medicine_name)}${packTag({ medicine_name: c.medicine_name, pack_size: c.pack_size })}</b>
-          <div class="qty-stepper" style="margin-top:0;">
-            <button data-dec="${i}">−</button>
-            <input type="number" min="1" ${capsAtMax ? `max="${c.max_qty}"` : ''} id="cart-qty-${i}" value="${c.quantity}" style="width:48px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:2px 0; font-weight:700;" />
-            <button data-inc="${i}">+</button>
+      <div>
+        <div class="ord-row">
+          <div class="ord-name"><b>${esc(c.medicine_name)}${packTag({ medicine_name: c.medicine_name, pack_size: c.pack_size })}</b><small>${esc(range)}</small></div>
+          <div class="ord-step">
+            <button data-dec="${i}" class="${last ? 'rm' : ''}" aria-label="${last ? 'Remove ' : 'One fewer '}${esc(c.medicine_name)}" title="${last ? 'Remove from this order' : 'One fewer'}">${last ? uiIcon('x', 16) : '\u2212'}</button>
+            <input type="number" min="1" ${capsAtMax ? `max="${c.max_qty}"` : ''} id="cart-qty-${i}" value="${c.quantity}" aria-label="Quantity of ${esc(c.medicine_name)}" />
+            <button data-inc="${i}" aria-label="One more ${esc(c.medicine_name)}">+</button>
           </div>
-          <button data-remove="${i}" title="Remove" style="margin-left:10px;">${uiIcon('x', 14)}</button>
         </div>
-        ${overMax ? `<p style="color:#8a6d00; background:#fff8e1; border:1px solid #f0d98c; border-radius:8px; padding:6px 10px; font-size:12.5px; margin:6px 0 0;">${uiIcon('warn', 14)} Items above max quantity require pharmacist approval and may cause delays in processing.</p>` : ''}
+        ${overMax ? `<p class="ord-warn">${uiIcon('warn', 14)} Items above max quantity require pharmacist approval and may cause delays in processing.</p>` : ''}
       </div>`;
     }).join('');
     listEl.querySelectorAll('[data-dec]').forEach(b => b.onclick = () => {
       const i = +b.dataset.dec;
       if (cart[i].quantity > 1) cart[i].quantity--;
+      else cart.splice(i, 1);   // pressing minus at 1 takes the drug off the order list
       renderCart();
     });
     listEl.querySelectorAll('[data-inc]').forEach(b => b.onclick = () => {

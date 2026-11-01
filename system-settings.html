@@ -44,7 +44,24 @@
 
 async function renderSystemSettings() {
   const body = document.getElementById('body');
+  const curTheme = UI_THEMES[systemSettings.ui_theme] ? systemSettings.ui_theme : 'nhs';
+  const curDensity = systemSettings.ui_density === 'compact' ? 'compact' : 'comfortable';
   body.innerHTML = `
+    ${isDeveloper() ? `<div class="card">
+      <h2>Colour scheme &amp; density</h2>
+      <p class="muted">Applies to everyone using StockFlow\u2122. Pick one to preview it straight away, then save.</p>
+      <div class="theme-grid" id="theme-grid">
+        ${Object.entries(UI_THEMES).map(([k, th]) => `<button type="button" class="theme-opt" data-theme="${k}" aria-pressed="${k === curTheme}">
+          <span class="sw">${th.swatch.map(c => `<i style="background:${c}"></i>`).join('')}</span><b>${esc(th.name)}</b><small>${esc(th.note)}</small></button>`).join('')}
+      </div>
+      <label style="margin-top:16px;">Density</label>
+      <div class="seg" id="density-seg" role="group" aria-label="Density">
+        <button type="button" data-density="comfortable" class="${curDensity === 'comfortable' ? 'on' : ''}">Comfortable</button>
+        <button type="button" data-density="compact" class="${curDensity === 'compact' ? 'on' : ''}">Compact</button>
+      </div>
+      <p class="muted" style="margin-top:6px;">Compact fits more on a screen \u2014 good for large monitors.</p>
+      <button class="btn magenta" style="margin-top:14px;" id="save-appearance">Save appearance</button>
+    </div>` : ''}
     <div class="card">
       <h2>Processing cutoff times</h2>
       <p class="muted">Adhoc orders placed before the cutoff are due same working day (green); after it, due the next working day (amber). Weekends and bank holidays always use the weekend/holiday cutoff.</p>
@@ -169,12 +186,36 @@ async function renderSystemSettings() {
     </div>` : ''}
   `;
   applySubtabs(body, [
-    { id: 'processing', label: 'Processing & timing', heads: ['Processing cutoff', 'Top-up countdown', 'Inactivity', 'Duplicate-order', 'Order history', 'Overdue top-up'] },
-    { id: 'checks', label: 'Picking check', heads: ['Second-person'] },
-    { id: 'backup', label: 'Backups', heads: ['Stocklist backup', 'Weekly digest'] },
-    { id: 'branding', label: 'Logos & branding', heads: ['Trust logo', 'Login screen logo'] },
-    { id: 'features', label: 'Paid features', heads: ['Paid features'] },
-  ]);
+    { id: 'appearance', label: 'Appearance & branding', sub: 'Colour scheme, density, logos', heads: ['Colour scheme', 'Trust logo', 'Login screen logo'] },
+    { id: 'ordering', label: 'Ordering rules', sub: 'Duplicate-order warning, restricted reordering, order history window', heads: ['Duplicate-order', 'Restricted reordering', 'Order history'] },
+    { id: 'timing', label: 'Cut-offs & top-ups', sub: 'Processing cut-off times, top-up countdown, overdue top-up preview', heads: ['Processing cutoff', 'Top-up countdown', 'Overdue top-up'] },
+    { id: 'security', label: 'Security & checks', sub: 'Inactivity sign-out, second-person picking check', heads: ['Inactivity', 'Second-person'] },
+    { id: 'email', label: 'Email & automation', sub: 'Stocklist backup by email, weekly digest', heads: ['Stocklist backup', 'Weekly digest'] },
+    { id: 'features', label: 'Features', sub: 'Paid feature switches', heads: ['Paid features'] },
+  ], 'appearance');
+
+  const themeGrid = document.getElementById('theme-grid');
+  if (themeGrid) {
+    let pickTheme = curTheme, pickDensity = curDensity;
+    themeGrid.querySelectorAll('[data-theme]').forEach(b => b.onclick = () => {
+      pickTheme = b.dataset.theme;
+      themeGrid.querySelectorAll('[data-theme]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      applyUiTheme(pickTheme, pickDensity, false);
+    });
+    document.querySelectorAll('#density-seg [data-density]').forEach(b => b.onclick = () => {
+      pickDensity = b.dataset.density;
+      document.querySelectorAll('#density-seg [data-density]').forEach(x => x.classList.toggle('on', x === b));
+      applyUiTheme(pickTheme, pickDensity, false);
+    });
+    document.getElementById('save-appearance').onclick = async () => {
+      const { error } = await sb.from('system_settings').upsert([{ key: 'ui_theme', value: pickTheme }, { key: 'ui_density', value: pickDensity }], { onConflict: 'key' });
+      if (error) return toast(error.message, true);
+      systemSettings.ui_theme = pickTheme; systemSettings.ui_density = pickDensity;
+      applyUiTheme(pickTheme, pickDensity);
+      toast('Appearance saved for everyone.');
+    };
+  }
+
 
   document.getElementById('save-cutoffs').onclick = async () => {
     const weekday = document.getElementById('cutoff-weekday').value;

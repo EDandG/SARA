@@ -603,6 +603,26 @@ function renderSessionCard(session, allLines, nameById = {}) {
 }
 
 
+// ---------- Colour scheme + density (chosen by the Developer under System settings > Appearance) ----------
+const UI_THEMES = {
+  nhs:   { name: 'NHS Refined', note: 'Familiar blue, calmer ground', swatch: ['#003087', '#005eb8', '#e1eefa'],
+           vars: { '--header-bg': '#003087', '--header-bg-mid': '#003087', '--navy': '#003087', '--navy-deep': '#00205b', '--navy-mid': '#005eb8', '--teal': '#005eb8', '--teal-soft': '#0072ce', '--teal-pale': '#e1eefa', '--teal-deep': '#003087', '--bg': '#f0f4f5' } },
+  ink:   { name: 'Ink & Teal', note: 'Dark header, teal actions', swatch: ['#12263a', '#0f766e', '#d9f2ee'],
+           vars: { '--header-bg': '#12263a', '--header-bg-mid': '#12263a', '--navy': '#12263a', '--navy-deep': '#0c1a29', '--navy-mid': '#0f766e', '--teal': '#0f766e', '--teal-soft': '#14867d', '--teal-pale': '#d9f2ee', '--teal-deep': '#0b4f4a', '--bg': '#f3f6f8' } },
+  paper: { name: 'Warm Paper', note: 'Cream ground, deep green', swatch: ['#1b3a31', '#1f5f4a', '#e3efe9'],
+           vars: { '--header-bg': '#1b3a31', '--header-bg-mid': '#1b3a31', '--navy': '#1b3a31', '--navy-deep': '#12271f', '--navy-mid': '#1f5f4a', '--teal': '#1f5f4a', '--teal-soft': '#2a7a60', '--teal-pale': '#e3efe9', '--teal-deep': '#1b3a31', '--bg': '#f7f4ee' } },
+};
+function applyUiTheme(theme, density, remember = true) {
+  const t = UI_THEMES[theme] ? theme : 'nhs';
+  const d = density === 'compact' ? 'compact' : 'comfortable';
+  const root = document.documentElement;
+  Object.entries(UI_THEMES[t].vars).forEach(([k, v]) => root.style.setProperty(k, v));
+  root.setAttribute('data-density', d);
+  if (remember) { try { localStorage.setItem('sf_ui', JSON.stringify({ t, d })); } catch (e) { /* storage blocked: the setting still applies on load */ } }
+}
+// Apply the last-known choice immediately so pages don't flash the default colours; the saved setting replaces it once loaded.
+try { const u = JSON.parse(localStorage.getItem('sf_ui') || 'null'); if (u) applyUiTheme(u.t, u.d, false); } catch (e) { /* ignore */ }
+
 function downloadMyStocklist() {
   const list = myWards.slice().sort((a, c) => a.name.localeCompare(c.name, undefined, { numeric: true, sensitivity: 'base' }));
   if (list.length === 1) return exportStocklistPdf(list[0].id);
@@ -1025,6 +1045,7 @@ async function requireAuth(options = {}) {
     const ini = (profile.initials || profile.full_name.split(/\s+/).map(w => w[0]).join('').slice(0, 3)).toUpperCase();
     el.innerHTML = `<span class="who-av" title="${esc(profile.full_name)}">${esc(ini)}</span><span class="who-txt"><b>${esc(profile.full_name)}</b><small>${esc(roleLabel(profile.role))}</small></span>`;
   });
+  applyUiTheme(systemSettings.ui_theme, systemSettings.ui_density);
   applyTrustLogo();
   document.querySelectorAll('[data-ward-context]').forEach(el => el.textContent = canOrder() && myWards.length
     ? ''   // the header no longer lists a user's wards
@@ -1411,9 +1432,17 @@ function applySubtabs(root, tabs, defaultId) {
   if (used.length < 2) return;
   const fromHash = decodeURIComponent((location.hash.match(/tab=([^&]+)/) || [])[1] || '');
   let active = used.find(t => t.id === fromHash) || used.find(t => t.id === defaultId) || used[0];
-  const strip = document.createElement('div'); strip.className = 'subtabs-wrap';
-  strip.innerHTML = '<nav class="seg subtabs" role="tablist">' + used.map(t => `<button type="button" role="tab" data-st="${t.id}">${esc(t.label)}</button>`).join('') + '</nav>';
-  root.insertBefore(strip, cards[0]);
+  const vertical = used.some(t => t.sub);   // tabs with a description render as a left-hand menu
+  const strip = document.createElement('div'); strip.className = vertical ? 'set-nav' : 'subtabs-wrap';
+  strip.innerHTML = vertical
+    ? used.map(t => `<button type="button" role="tab" data-st="${t.id}"><b>${esc(t.label)}</b><small>${esc(t.sub || '')}</small></button>`).join('')
+    : '<nav class="seg subtabs" role="tablist">' + used.map(t => `<button type="button" role="tab" data-st="${t.id}">${esc(t.label)}</button>`).join('') + '</nav>';
+  if (vertical) {
+    const wrap = document.createElement('div'); wrap.className = 'set-wrap';
+    const panels = document.createElement('div'); panels.className = 'set-panels';
+    root.insertBefore(wrap, cards[0]); wrap.appendChild(strip); wrap.appendChild(panels);
+    cards.forEach(c => panels.appendChild(c));
+  } else root.insertBefore(strip, cards[0]);
   const paint = () => {
     cards.forEach((c, i) => c.classList.toggle('st-off', tabOf[i] !== active));
     strip.querySelectorAll('button').forEach(b => { const on = b.dataset.st === active.id; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); });

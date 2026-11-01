@@ -122,7 +122,9 @@ async function renderSessionDetail() {
     <div class="card">
       <h2>${esc(wardName(session.ward_id))} \u2014 submitted ${fmtDate(session.created_at)}</h2>
       <p class="muted" style="margin-top:-8px;">By ${esc(nameById[session.submitted_by] || '\u2014')} \u00b7 ${session.order_type === 'topup' ? 'Top-up order' : 'Adhoc order'}</p>
-      <table><thead><tr><th></th><th>Medicine</th><th>Qty</th><th>Status</th>${readOnly ? '' : '<th></th>'}</tr></thead><tbody>
+      ${(() => { const top = (lines || []).filter(o => !o.parent_order_id); const done = top.filter(o => o.status !== 'pending').length;
+        return top.length ? `<div class="pick-progress"><span><b>${done}</b> of ${top.length} line${top.length === 1 ? '' : 's'} actioned</span><div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="${top.length}" aria-valuenow="${done}"><i style="width:${Math.round(100 * done / top.length)}%"></i></div></div>` : ''; })()}
+      <table class="pick-table"><thead><tr><th></th><th>Medicine</th><th>Qty</th><th>Status</th>${readOnly ? '' : '<th></th>'}</tr></thead><tbody>
         ${(lines || []).filter(o => !o.parent_order_id).map(o => {
           const approvedAttr = o.approved_by ? attribution('Approved by', nameById[o.approved_by], o.approved_at) : '';
           const processedAttr = o.processed_by ? attribution(statusLabel(o.status) + ' by', nameById[o.processed_by], o.processed_at) : '';
@@ -130,7 +132,7 @@ async function renderSessionDetail() {
           return `<tr id="line-${o.id}" ${o.approved_by ? 'style="background:var(--teal-pale);"' : ''}>
           <td>${o.status === 'pending' ? turnaroundDot(o) : ''}</td>
           <td>${esc(o.medicine_name)}${packTag(o)} ${o.approved_by ? `<span class="badge complete">${uiIcon('check', 12)} Pharmacist-approved</span>` : ''}${approvedAttr}${processedAttr}${dispositionAttr}</td>
-          <td>${o.quantity}</td>
+          <td class="qty">${o.quantity}</td>
           <td>${statusBadge(o.status, statusBadgeText(o.status))}</td>
           ${readOnly ? '' : `<td style="text-align:right; white-space:nowrap;">
             ${o.status === 'pending' ? `
