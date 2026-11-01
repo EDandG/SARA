@@ -737,6 +737,8 @@ async function renderComplianceSection(rows) {
     scopeWards.forEach(w => {
       if (!w.topup_days?.length) return;
       const cursor = new Date(lastFrom); cursor.setHours(0, 0, 0, 0);
+      // After "Clear all app data", earlier due dates have no orders by design: don't count them as missed.
+      if (systemSettings.data_cleared_at) { const base = new Date(systemSettings.data_cleared_at + 'T00:00:00'); if (!isNaN(base) && base > cursor) cursor.setTime(base.getTime()); }
       const endDate = new Date(Math.min(lastTo.getTime(), today.getTime() - 86400000)); // never flag today — it isn't over yet
       while (cursor <= endDate) {
         const dayName = WEEKDAY_NAMES[cursor.getDay()];

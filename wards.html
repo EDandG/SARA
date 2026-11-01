@@ -33,6 +33,7 @@
 <div id="toast-root"></div>
 
 <script src="vendor/supabase.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
 <script src="shared.js"></script>
 <script>
 async function renderWards() {
@@ -58,6 +59,13 @@ async function renderWards() {
       </div>
       <button class="btn magenta" style="margin-top:14px;" id="create-ward-btn">Create ward</button>
     </div>` : ''}
+    ${isDeveloper() ? `<div class="card">
+      <h2>Bulk upload wards (Excel)</h2>
+      <p class="muted">Upload an Excel or CSV file with a <b>Ward</b> column and, optionally, a <b>Site</b> column (matched to an existing site name). You can check and edit every name before anything is saved. Existing wards are never overwritten.</p>
+      <input type="file" id="bulk-file" accept=".xlsx,.xls,.csv" />
+      <button class="btn ghost small" id="bulk-template" style="margin-top:8px;">Download template</button>
+      <div id="bulk-preview"></div>
+    </div>` : ''}
     <div class="card"><h2>Wards</h2><div id="ward-list">Loading\u2026</div></div>`;
 
   if (fullAccess) {
@@ -70,6 +78,62 @@ async function renderWards() {
       toast('Ward created.');
       document.getElementById('new-ward-name').value = '';
       await refreshSitesWards(); renderWards();
+    };
+  }
+
+  if (isDeveloper()) {
+    document.getElementById('bulk-template').onclick = () => {
+      const ws = XLSX.utils.aoa_to_sheet([['Site', 'Ward'], [sites[0]?.name || 'Site name', 'Ward name']]);
+      const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Wards');
+      XLSX.writeFile(wb, 'ward-upload-template.xlsx');
+    };
+    document.getElementById('bulk-file').onchange = async (ev) => {
+      const f = ev.target.files[0]; if (!f) return;
+      const prev = document.getElementById('bulk-preview');
+      let rows;
+      try {
+        const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
+      } catch (e) { prev.innerHTML = '<div class="modal-error">Could not read that file.</div>'; return; }
+      rows = rows.filter(r => r.some(c => String(c).trim()));
+      if (!rows.length) { prev.innerHTML = '<div class="empty">The file is empty.</div>'; return; }
+      const head = rows[0].map(c => String(c).trim().toLowerCase());
+      let wi = head.indexOf('ward'), si = head.indexOf('site');
+      let data = rows;
+      if (wi >= 0 || si >= 0) data = rows.slice(1); else { wi = 0; si = rows[0].length > 1 ? 0 : -1; if (rows[0].length > 1) { si = 0; wi = 1; } }
+      if (wi < 0) wi = 0;
+      const list = data.map(r => ({ name: String(r[wi] ?? '').trim(), site: si >= 0 ? String(r[si] ?? '').trim() : '' })).filter(x => x.name);
+      const siteIdFor = (nm) => (sites.find(x => x.name.toLowerCase() === nm.toLowerCase()) || {}).id || '';
+      prev.innerHTML = `<p class="muted" style="margin-top:12px;">${list.length} ward${list.length === 1 ? '' : 's'} found. Edit any name, choose a site, untick any you don't want, then import.</p>
+        <table><thead><tr><th></th><th>Ward name</th><th>Site</th><th>Note</th></tr></thead><tbody>
+        ${list.map((x, i) => `<tr data-i="${i}"><td><input type="checkbox" class="bk-on" checked /></td>
+          <td><input type="text" class="bk-name" value="${esc(x.name)}" /></td>
+          <td><select class="bk-site">${sites.map(st => `<option value="${st.id}" ${st.id === (siteIdFor(x.site) || sites[0].id) ? 'selected' : ''}>${esc(st.name)}</option>`).join('')}</select>${x.site && !siteIdFor(x.site) ? `<div class="muted" style="font-size:11px;">"${esc(x.site)}" not found</div>` : ''}</td>
+          <td class="bk-note muted"></td></tr>`).join('')}
+        </tbody></table>
+        <button class="btn magenta" id="bulk-go" style="margin-top:12px;">Import selected wards</button>`;
+      const check = () => {
+        const seen = new Set();
+        prev.querySelectorAll('tbody tr').forEach(tr => {
+          const nm = tr.querySelector('.bk-name').value.trim(), st = tr.querySelector('.bk-site').value;
+          const key = st + '|' + nm.toLowerCase();
+          const dupe = wards.some(w => w.site_id === st && w.name.trim().toLowerCase() === nm.toLowerCase()) || seen.has(key);
+          seen.add(key);
+          tr.querySelector('.bk-note').textContent = !nm ? 'Name needed' : dupe ? 'Already exists \u2014 will be skipped' : '';
+          tr.dataset.skip = (!nm || dupe) ? '1' : '';
+        });
+      };
+      prev.querySelectorAll('input,select').forEach(e => e.oninput = e.onchange = check);
+      check();
+      document.getElementById('bulk-go').onclick = async () => {
+        const toAdd = [...prev.querySelectorAll('tbody tr')].filter(tr => tr.querySelector('.bk-on').checked && !tr.dataset.skip)
+          .map(tr => ({ name: tr.querySelector('.bk-name').value.trim(), site_id: tr.querySelector('.bk-site').value }));
+        if (!toAdd.length) return toast('Nothing new to import.', true);
+        const { error } = await sb.from('wards').insert(toAdd);
+        if (error) return toast(error.message, true);
+        toast(`${toAdd.length} ward${toAdd.length === 1 ? '' : 's'} imported.`);
+        await refreshSitesWards(); renderWards();
+      };
     };
   }
 
@@ -149,11 +213,27 @@ async function renderWards() {
     openTopupModal(wards.find(x => x.id === b.dataset.topup), renderWards);
   });
   el.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
-    confirmDialog('Delete ward', 'This also deletes its stocklist and order history. This cannot be undone.', 'Delete ward', async () => {
-      const { error } = await sb.from('wards').delete().eq('id', b.dataset.del);
-      if (error) return toast(error.message, true);
-      toast('Ward deleted.');
-      await refreshSitesWards(); renderWards();
+    const w = wards.find(x => x.id === b.dataset.del);
+    const name = w ? w.name : 'this ward';
+    // Three separate confirmations before a ward can be deleted.
+    confirmDialog('Delete ward (1 of 3)', `Delete <b>${esc(name)}</b>? This also deletes its stocklist and order history. This cannot be undone.`, 'Continue', () => {
+      confirmDialog('Delete ward (2 of 3)', `Are you sure? Everyone allocated to <b>${esc(name)}</b> will lose it, and its stocklist and orders will be permanently removed.`, 'Yes, continue', () => {
+        openModal(`${modalIcon('warn')}<h3>Delete ward (3 of 3)</h3>
+          <p class="muted">Final check. Type the ward name <b>${esc(name)}</b> to delete it permanently.</p>
+          <input type="text" id="del-ward-name" autocomplete="off" />
+          <div class="modal-error" id="del-ward-error"></div>
+          <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn danger" id="del-ward-go">Delete ward</button></div>`);
+        document.getElementById('del-ward-go').onclick = async () => {
+          if (document.getElementById('del-ward-name').value.trim().toLowerCase() !== name.trim().toLowerCase()) {
+            document.getElementById('del-ward-error').textContent = 'The name does not match.'; return;
+          }
+          const { error } = await sb.from('wards').delete().eq('id', b.dataset.del);
+          if (error) { document.getElementById('del-ward-error').textContent = error.message; return; }
+          closeModal();
+          toast('Ward deleted.');
+          await refreshSitesWards(); renderWards();
+        };
+      }, true);
     }, true);
   });
 }

@@ -58,7 +58,7 @@ async function renderLogs() {
   const { count } = await sb.from('orders').select('*', { count: 'exact', head: true });
   const { count: loginCount } = await sb.from('login_events').select('*', { count: 'exact', head: true });
   const { count: histCount } = await sb.from('blist_item_history').select('*', { count: 'exact', head: true });
-  const { data: stRows } = await sb.from('system_settings').select('key, value').in('key', ['orders_cleared', 'audit_log_cleared']);
+  const { data: stRows } = await sb.from('system_settings').select('key, value').in('key', ['orders_cleared', 'audit_log_cleared', 'app_data_cleared']);
   (stRows || []).forEach(r => { systemSettings[r.key] = r.value; });
   body.innerHTML = `
     <div class="card">
@@ -70,20 +70,32 @@ async function renderLogs() {
         ${sites.map(s => `<option value="${s.id}">${esc(s.name)} only</option>`).join('')}
       </select>
       <button class="btn magenta" id="export-logs-btn" style="margin-top:14px;">Download logs (Excel)</button>
+      <button class="btn ghost" id="export-audit-btn" style="margin-top:14px;">Download audit log (Excel)</button>
     </div>
+    ${isDeveloper() ? `
+    <div class="card">
+      <h2>Clear all app data</h2>
+      <p class="muted">Permanently deletes <b>everything except users and stocklists</b>: every order and submission session, notices and banners, login and stocklist-change history. Missed top-ups are cleared too \u2014 reports only count due dates from today onwards. Users, wards, sites, stocklists, the drug catalogue and settings are kept. This cannot be undone \u2014 download the logs first.</p>
+      ${systemSettings.app_data_cleared ? `<p class="muted" style="font-size:12px;">Last cleared: ${esc(systemSettings.app_data_cleared)}</p>` : ''}
+      <button class="btn danger" id="clear-all-btn">Clear all app data\u2026</button>
+    </div>
+    ` : ''}
+    ${isDeveloper() ? `
     <div class="card">
       <h2>Clear all orders</h2>
       <p class="muted">Permanently deletes every order and every submission session across the whole system (${count ?? 0} order record${count === 1 ? '' : 's'} currently). Users, wards, sites and stocklists are not touched. This cannot be undone \u2014 download the export above first if you need a record.</p>
       ${systemSettings.orders_cleared ? `<p class="muted" style="font-size:12px;">Last cleared: ${esc(systemSettings.orders_cleared)}</p>` : ''}
       <button class="btn danger" id="clear-logs-btn">Clear all orders\u2026</button>
     </div>
+    ` : ''}
+    ${isDeveloper() ? `
     <div class="card">
       <h2>Clear audit log</h2>
       <p class="muted">Permanently deletes the login / logout history (${loginCount ?? 0} event${loginCount === 1 ? '' : 's'}) and the stocklist change history (${histCount ?? 0} change${histCount === 1 ? '' : 's'}). Orders, users and current stocklists are not touched, and nobody is signed out.</p>
       ${systemSettings.audit_log_cleared ? `<p class="muted" style="font-size:12px;">Last cleared: ${esc(systemSettings.audit_log_cleared)}</p>` : ''}
-      <button class="btn ghost" id="export-audit-btn">Download audit log (Excel)</button>
       <button class="btn danger" id="clear-audit-btn">Clear audit log\u2026</button>
-    </div>`;
+    </div>
+    ` : ''}`;
 
   document.getElementById('export-logs-btn').onclick = async () => {
     const scope = document.getElementById('export-scope').value;
@@ -124,10 +136,13 @@ async function renderLogs() {
       renderLogs();
     };
   }
-  document.getElementById('clear-logs-btn').onclick = () => confirmWipe({
+  if (isDeveloper()) document.getElementById('clear-all-btn').onclick = () => confirmWipe({
+    title: 'Clear all app data', word: 'CLEAR ALL DATA', rpc: 'clear_app_data', done: 'App data cleared',
+    text: 'This permanently deletes <b>everything except users and stocklists</b> \u2014 all orders, sessions, notices and history, including missed top-ups. It cannot be undone.' });
+  if (isDeveloper()) document.getElementById('clear-logs-btn').onclick = () => confirmWipe({
     title: 'Clear all orders', word: 'CLEAR ORDERS', rpc: 'clear_all_orders', done: 'All orders cleared',
     text: 'This permanently deletes <b>every order and submission session</b> for every site and ward. It cannot be undone.' });
-  document.getElementById('clear-audit-btn').onclick = () => confirmWipe({
+  if (isDeveloper()) document.getElementById('clear-audit-btn').onclick = () => confirmWipe({
     title: 'Clear audit log', word: 'CLEAR AUDIT', rpc: 'clear_audit_log', done: 'Audit log cleared',
     text: 'This permanently deletes the <b>login / logout history and the stocklist change history</b>. It cannot be undone.' });
   document.getElementById('export-audit-btn').onclick = async () => {

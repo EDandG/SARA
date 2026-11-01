@@ -538,7 +538,9 @@ header.topbar .brand .trust-logo{
 }
 header.topbar .brand .trust-logo img{ height:100%; width:auto; max-width:190px; object-fit:contain; display:block; }
 @media (max-width:600px){ header.topbar .brand .trust-logo{ height:38px; padding:3px 8px; } header.topbar .brand .trust-logo img{ max-width:130px; } }
-@media print{ header.topbar .brand .trust-logo{ box-shadow:none; } }
+/* Trust logo: login page and printed output only, not on screen once signed in. */
+header.topbar .brand .trust-logo{ display:none; }
+@media print{ header.topbar .brand .trust-logo{ display:flex; box-shadow:none; } }
 
 /* ---- Home tile icons (SVG, theme colours) ---- */
 .home-tile .icon{ display:flex; justify-content:center; color:var(--teal); }

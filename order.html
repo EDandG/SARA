@@ -121,7 +121,12 @@ async function isWardOverdueForTopup(wardId) {
 }
 
 async function openTempStockModal() {
-  const { data: catalogRows } = await sb.from('drug_catalog').select('medicine_name, pack_size').eq('hidden', false).order('medicine_name');
+  let { data: catalogRows, error: catErr } = await sb.from('drug_catalog').select('medicine_name, pack_size').eq('hidden', false).order('medicine_name');
+  if (catErr) {
+    // Database not yet updated with the hide/unhide column: fall back to the whole catalogue.
+    ({ data: catalogRows, error: catErr } = await sb.from('drug_catalog').select('medicine_name, pack_size').order('medicine_name'));
+    if (catErr) { toast('Could not load the drug catalogue: ' + catErr.message, true); return; }
+  }
   const catalog = catalogRows || [];
   openModal(`
     <h3>Temp stock</h3>

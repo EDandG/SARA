@@ -44,15 +44,8 @@ async function renderDrugCatalog() {
     ${isDeveloper() ? `
     <div class="card">
       <h2>Import from spreadsheet</h2>
-      <p class="muted">Upload a CSV or Excel export. Choose which column(s) hold the drug name and, optionally, the pack size — by column letter, same as Excel (A, B …). Pack size is descriptive only; each ward still sets its own max qty when adding a drug from here. Entries already in the catalog are left alone; new ones are added.</p>
-      <div class="row">
-        <div><label>Drug name column(s)</label><input type="text" id="col-name" value="A" placeholder="e.g. A or A,B" /></div>
-        <div><label>Join columns with</label><select id="col-join"><option value=" ">a space</option><option value=" - ">a dash ( - )</option><option value=", ">a comma (, )</option><option value=" | ">a bar ( | )</option><option value="">nothing</option></select></div>
-        <div><label>Pack size column <span class="muted" style="font-weight:400;">(optional, stored separately)</span></label><input type="text" id="col-pack" placeholder="e.g. B" /></div>
-      </div>
-      <p class="muted" style="margin:8px 0 0;"><b>Combining two columns into one name:</b> list both letters in the name box, e.g. <code class="small">A,B</code> (drug name in A, pack size in B). They are joined in that order using the separator you choose, so "Paracetamol 500mg tablets" + "100" becomes one entry. A preview of the first few combined names appears after you choose the file.</p>
-      <label style="margin-top:10px; display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="skip-header" style="width:auto;" />First row is a header row (skip it)</label>
-      <div class="file-drop" id="drop-zone" style="margin-top:12px;">Click to choose a CSV or Excel file, or drop one here</div>
+      <p class="muted">Drop an Excel or CSV sheet below, then pick which column holds the <b>drug name</b> and which holds the <b>pack size</b>. You see a preview before anything is saved. Drugs already in the catalogue are not duplicated. Build the catalogue first; stocklists are then built from it inside the app.</p>
+      <div class="file-drop" id="drop-zone" style="margin-top:12px;">Drop an Excel or CSV sheet here, or click to choose one</div>
       <input type="file" id="csv-input" accept=".csv,.xlsx,.xls" class="hidden" />
       <div id="csv-preview"></div>
     </div>
@@ -204,7 +197,15 @@ async function loadSectionList() {
   const { data, error } = await sb.from('drug_sections').select('*').order('name');
   if (error) { el.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
   if (!data?.length) { el.innerHTML = `<div class="empty">No sections yet \u2014 add one above.</div>`; return; }
-  el.innerHTML = data.map(s => `<span class="capsule" style="margin-right:6px;">${esc(s.name)} <button data-remove-section="${s.id}" data-name="${esc(s.name)}" style="border:none; background:none; cursor:pointer; color:inherit; font-weight:700; padding:0 0 0 4px;">\u00d7</button></span>`).join('');
+  const { data: lk } = await sb.from('drug_catalog_sections').select('section_id');
+  const cnt = {}; (lk || []).forEach(l => { cnt[l.section_id] = (cnt[l.section_id] || 0) + 1; });
+  el.innerHTML = data.map(s => `<div style="display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--border);">
+      <b style="flex:1;">${esc(s.name)}</b>
+      <span class="muted" style="font-size:12.5px;">${cnt[s.id] ? cnt[s.id] + ' drug' + (cnt[s.id] === 1 ? '' : 's') : 'No drugs \u2014 not shown on printed stocklists'}</span>
+      <button class="btn small ghost" data-pick-section="${s.id}" data-name="${esc(s.name)}">Choose drugs\u2026</button>
+      <button class="btn small danger" data-remove-section="${s.id}" data-name="${esc(s.name)}">Remove</button>
+    </div>`).join('');
+  el.querySelectorAll('[data-pick-section]').forEach(b => b.onclick = () => openSectionPicker(b.dataset.pickSection, b.dataset.name));
   el.querySelectorAll('[data-remove-section]').forEach(b => b.onclick = () => {
     confirmDialog('Remove this section?', `"${esc(b.dataset.name)}" will no longer group any drug on a printed stocklist. This doesn't remove the drugs themselves from the catalog.`, 'Remove', async () => {
       const { error } = await sb.from('drug_sections').delete().eq('id', b.dataset.removeSection);
@@ -216,59 +217,124 @@ async function loadSectionList() {
   });
 }
 
+// Multiselect: choose which catalogue drugs belong to a section. A section with
+// no drugs never appears on a printed stocklist.
+async function openSectionPicker(sectionId, sectionName) {
+  const [{ data: drugs }, { data: links }] = await Promise.all([
+    sb.from('drug_catalog').select('id, medicine_name, pack_size, hidden').order('medicine_name'),
+    sb.from('drug_catalog_sections').select('drug_catalog_id').eq('section_id', sectionId),
+  ]);
+  const all = drugs || [];
+  const original = new Set((links || []).map(l => l.drug_catalog_id));
+  const chosen = new Set(original);
+  openModal(`<h3>Drugs in "${esc(sectionName)}"</h3>
+    <input type="text" id="sp-search" placeholder="Search drugs\u2026" autocomplete="off" />
+    <div style="display:flex; gap:8px; margin:8px 0; align-items:center;">
+      <button class="btn small ghost" id="sp-all">Select all shown</button>
+      <button class="btn small ghost" id="sp-none">Clear all shown</button>
+      <span class="muted" id="sp-count" style="margin-left:auto; font-size:12.5px;"></span>
+    </div>
+    <div id="sp-list" style="max-height:340px; overflow:auto; border:1px solid var(--border); border-radius:8px; padding:4px 8px;"></div>
+    <div class="modal-error" id="sp-error"></div>
+    <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="sp-save">Save</button></div>`);
+  const listEl = document.getElementById('sp-list');
+  const shown = () => { const q = document.getElementById('sp-search').value.trim().toLowerCase(); return all.filter(d => !q || d.medicine_name.toLowerCase().includes(q)); };
+  const draw = () => {
+    const rows = shown();
+    listEl.innerHTML = rows.length ? rows.map(d => `<label style="display:flex; gap:8px; align-items:center; font-weight:400; padding:4px 0;"><input type="checkbox" data-d="${d.id}" ${chosen.has(d.id) ? 'checked' : ''} style="width:auto;" />
+      <span style="flex:1;">${esc(d.medicine_name)}${d.hidden ? ' <span class="muted">(hidden)</span>' : ''}</span><span class="muted" style="font-size:12px;">${esc(d.pack_size || '')}</span></label>`).join('') : '<div class="empty">No drugs match.</div>';
+    listEl.querySelectorAll('[data-d]').forEach(cb => cb.onchange = () => { cb.checked ? chosen.add(cb.dataset.d) : chosen.delete(cb.dataset.d); count(); });
+    count();
+  };
+  const count = () => { document.getElementById('sp-count').textContent = chosen.size + ' selected'; };
+  document.getElementById('sp-search').oninput = draw;
+  document.getElementById('sp-all').onclick = () => { shown().forEach(d => chosen.add(d.id)); draw(); };
+  document.getElementById('sp-none').onclick = () => { shown().forEach(d => chosen.delete(d.id)); draw(); };
+  document.getElementById('sp-save').onclick = async () => {
+    const add = [...chosen].filter(id => !original.has(id)).map(id => ({ drug_catalog_id: id, section_id: sectionId }));
+    const del = [...original].filter(id => !chosen.has(id));
+    const btn = document.getElementById('sp-save'); btn.disabled = true;
+    if (add.length) { const { error } = await sb.from('drug_catalog_sections').insert(add); if (error) { document.getElementById('sp-error').textContent = error.message; btn.disabled = false; return; } }
+    if (del.length) { const { error } = await sb.from('drug_catalog_sections').delete().eq('section_id', sectionId).in('drug_catalog_id', del); if (error) { document.getElementById('sp-error').textContent = error.message; btn.disabled = false; return; } }
+    closeModal(); toast('Section updated.'); loadSectionList(); loadCatalogList();
+  };
+  draw();
+}
+
+let catalogSheet = [];
+const catColLabel = (i, h) => String.fromCharCode(65 + (i % 26)) + (h ? ': ' + h : '');
+
 async function handleCatalogCsv() {
   const file = document.getElementById('csv-input').files[0];
   if (!file) return;
-
-  let rows;
+  const preview = document.getElementById('csv-preview');
   try {
-    const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array' });
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-  } catch (e) {
-    toast('Could not read that file: ' + e.message, true);
-    return;
-  }
-  if (document.getElementById('skip-header').checked) rows = rows.slice(1);
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    catalogSheet = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })
+      .filter(r => r.some(c => String(c).trim() !== ''));
+  } catch (e) { toast('Could not read that file: ' + e.message, true); return; }
+  if (!catalogSheet.length) { preview.innerHTML = '<p class="muted" style="margin-top:12px;">The file is empty.</p>'; return; }
+  const ncol = Math.max(...catalogSheet.map(r => r.length));
+  const first = catalogSheet[0].map(c => String(c).trim());
+  const looksHeader = first.filter(c => c && isNaN(Number(c))).length >= Math.ceil(first.filter(Boolean).length / 2);
+  const find = re => first.findIndex(c => re.test(c));
+  const gName = looksHeader ? find(/drug|medic|item|name|product|description/i) : 0;
+  const gPack = looksHeader ? find(/pack|size|form/i) : -1;
+  const opt = (sel, req) => `<option value="-1">${req ? 'Choose a column…' : '— none —'}</option>` +
+    Array.from({ length: ncol }, (_, i) => `<option value="${i}" ${sel === i ? 'selected' : ''}>${esc(catColLabel(i, looksHeader ? first[i] : ''))}</option>`).join('');
+  preview.innerHTML = `
+    <p class="muted" style="margin-top:12px;"><b>${esc(file.name)}</b> — ${catalogSheet.length} row${catalogSheet.length === 1 ? '' : 's'}.</p>
+    <label style="display:flex; gap:6px; align-items:center; font-weight:400;"><input type="checkbox" id="cat-hdr" style="width:auto;" ${looksHeader ? 'checked' : ''} /> First row is a heading row</label>
+    <div class="row" style="margin-top:8px;">
+      <div><label>Drug name column</label><select id="cat-c-name">${opt(gName, true)}</select></div>
+      <div><label>Pack size column <span class="muted" style="font-weight:400;">(optional)</span></label><select id="cat-c-pack">${opt(gPack, false)}</select></div>
+    </div>
+    <label style="display:flex; gap:6px; align-items:center; font-weight:400; margin-top:8px;"><input type="checkbox" id="cat-upd" style="width:auto;" /> Also update the pack size of drugs already in the catalogue</label>
+    <div id="cat-prev" style="margin-top:10px;"></div>`;
+  ['cat-hdr', 'cat-c-name', 'cat-c-pack', 'cat-upd'].forEach(id => document.getElementById(id).onchange = renderCatalogPreview);
+  renderCatalogPreview();
+}
 
-  const nameCols = document.getElementById('col-name').value.split(',').map(colToIndex).filter(i => i >= 0);
-  const packColLetter = document.getElementById('col-pack').value.trim();
-  const packCol = packColLetter ? colToIndex(packColLetter) : -1;
-  if (!nameCols.length) { toast('Enter at least one drug name column (e.g. A or A,B).', true); return; }
-
+async function renderCatalogPreview() {
+  const out = document.getElementById('cat-prev');
+  const cn = parseInt(document.getElementById('cat-c-name').value, 10), cp = parseInt(document.getElementById('cat-c-pack').value, 10);
+  if (cn < 0) { out.innerHTML = '<p class="muted">Choose the drug name column to see a preview.</p>'; return; }
+  const rows = document.getElementById('cat-hdr').checked ? catalogSheet.slice(1) : catalogSheet;
   const seen = new Set();
   catalogPreview = [];
   for (const row of rows) {
-    const nameParts = nameCols.map(idx => String(row[idx] ?? '').trim()).filter(Boolean);
-    const name = nameParts.join(document.getElementById('col-join').value).trim();
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    const pack = packCol >= 0 ? String(row[packCol] ?? '').trim() : '';
+    const name = String(row[cn] ?? '').replace(/\s+/g, ' ').trim();
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    const pack = cp >= 0 ? String(row[cp] ?? '').trim() : '';
     catalogPreview.push({ medicine_name: name, pack_size: pack || null });
   }
-
-  const { data: existing } = await sb.from('drug_catalog').select('medicine_name');
-  const existingNames = new Set((existing || []).map(r => r.medicine_name));
-  const newOnes = catalogPreview.filter(i => !existingNames.has(i.medicine_name));
-  const alreadyThere = catalogPreview.length - newOnes.length;
-
-  const preview = document.getElementById('csv-preview');
-  if (!catalogPreview.length) { preview.innerHTML = `<p class="muted" style="margin-top:12px;">No valid rows found \u2014 check the column letters and try again.</p>`; return; }
-  preview.innerHTML = `
-    <p class="muted" style="margin-top:12px;"><b>Preview of the first entries:</b></p>
-    <ul style="margin:4px 0 0 18px; padding:0; font-size:13px;">${catalogPreview.slice(0, 5).map(i => `<li>${esc(i.medicine_name)}${i.pack_size ? ` <span class="muted">(pack size: ${esc(i.pack_size)})</span>` : ''}</li>`).join('')}</ul>
-    <p class="muted" style="margin-top:12px;">${catalogPreview.length} row(s) parsed \u2014 ${newOnes.length} new, ${alreadyThere} already in the catalog (skipped on import).</p>
-    <button class="btn magenta" id="confirm-catalog-import" style="margin-top:8px;">Import ${newOnes.length} new drug(s)</button>`;
+  const { data: existing } = await sb.from('drug_catalog').select('id, medicine_name, pack_size');
+  const exMap = new Map((existing || []).map(r => [r.medicine_name.trim().toLowerCase(), r]));
+  const newOnes = catalogPreview.filter(i => !exMap.has(i.medicine_name.toLowerCase()));
+  const updatable = document.getElementById('cat-upd').checked
+    ? catalogPreview.filter(i => { const e = exMap.get(i.medicine_name.toLowerCase()); return e && i.pack_size && e.pack_size !== i.pack_size; }).map(i => ({ id: exMap.get(i.medicine_name.toLowerCase()).id, pack_size: i.pack_size }))
+    : [];
+  const already = catalogPreview.length - newOnes.length;
+  if (!catalogPreview.length) { out.innerHTML = '<p class="muted">No drug names found in that column.</p>'; return; }
+  out.innerHTML = `
+    <p class="muted">${catalogPreview.length} drug${catalogPreview.length === 1 ? '' : 's'} read — ${newOnes.length} new, ${already} already in the catalogue${updatable.length ? `, ${updatable.length} pack size${updatable.length === 1 ? '' : 's'} to update` : ''}.</p>
+    <table><thead><tr><th>Drug name</th><th>Pack size</th><th></th></tr></thead><tbody>
+    ${catalogPreview.slice(0, 10).map(i => `<tr><td>${esc(i.medicine_name)}</td><td>${esc(i.pack_size || '')}</td><td class="muted">${exMap.has(i.medicine_name.toLowerCase()) ? 'Already there' : 'New'}</td></tr>`).join('')}
+    </tbody></table>${catalogPreview.length > 10 ? `<p class="muted" style="font-size:12px;">Showing the first 10 of ${catalogPreview.length}.</p>` : ''}
+    <button class="btn magenta" id="confirm-catalog-import" style="margin-top:10px;" ${(newOnes.length || updatable.length) ? '' : 'disabled'}>Import ${newOnes.length} new drug${newOnes.length === 1 ? '' : 's'}${updatable.length ? ` and update ${updatable.length}` : ''}</button>`;
 
   document.getElementById('confirm-catalog-import').onclick = async () => {
-    if (!newOnes.length) return;
-    const { error } = await sb.from('drug_catalog').insert(newOnes.map(i => ({ ...i, created_by: profile.id })));
-    if (error) return toast(error.message, true);
-    toast(`${newOnes.length} drug(s) imported.`);
+    const btn = document.getElementById('confirm-catalog-import'); btn.disabled = true;
+    if (newOnes.length) {
+      const { error } = await sb.from('drug_catalog').insert(newOnes.map(i => ({ ...i, created_by: profile.id })));
+      if (error) { toast(error.message, true); btn.disabled = false; return; }
+    }
+    for (const u of updatable) await sb.from('drug_catalog').update({ pack_size: u.pack_size }).eq('id', u.id);
+    toast(`${newOnes.length} drug${newOnes.length === 1 ? '' : 's'} imported${updatable.length ? `, ${updatable.length} updated` : ''}.`);
     document.getElementById('csv-input').value = '';
-    catalogPreview = [];
-    preview.innerHTML = '';
+    catalogPreview = []; catalogSheet = [];
+    document.getElementById('csv-preview').innerHTML = '';
     loadCatalogList();
   };
 }
