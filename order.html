@@ -288,16 +288,16 @@ async function renderOrderBuilder() {
 
   body.innerHTML = `
     <div id="topup-banner-mount"></div>
-    ${lockedOut ? `<div class="card" style="border-color:var(--amber);"><p style="margin:0; color:var(--amber); font-weight:600;">⏳ ${esc(lockHolderName)} is currently building this ward's top-up order. Ordering is paused for everyone else here until they submit or cancel it — this'll clear automatically, no need to refresh.</p></div>` : ''}
+    ${lockedOut ? `<div class="card" style="border-color:var(--amber);"><p style="margin:0; color:var(--amber); font-weight:600;">${uiIcon('hourglass', 16)} ${esc(lockHolderName)} is currently building this ward's top-up order. Ordering is paused for everyone else here until they submit or cancel it — this'll clear automatically, no need to refresh.</p></div>` : ''}
     <div class="card">
       <button class="btn ghost small" id="order-back" style="margin-bottom:10px;">\u2039 Change ward or order type</button>
       <h2>${esc(currentWard?.name || 'Ward')} \u2014 ${orderType === 'topup' ? 'Complete full top up request' : 'Adhoc order'}</h2>
       ${orderType === 'topup' ? `<p class="muted" style="margin-bottom:10px; font-size:12px;">Top up orders can't exceed each item's usual maximum — this keeps them from needing pharmacist approval.</p>` : ''}
       ${orderType === 'adhoc' && wardAllowsAboveMax ? `<p class="muted" style="margin-bottom:10px; font-size:12px;">You can order above a stocklist item's usual max on this ward. If you do, please let your pharmacist know you've requested an above-max order — it will need their approval before it's processed.</p>` : ''}
       ${topupDays.length ? `<p class="muted" style="margin-bottom:10px;">Your top up days are: <b>${esc(topupDays.join(', '))}</b></p>` : ''}
-      ${showPredictiveOption ? `<button class="btn ghost small" id="ord-predictive" style="margin-bottom:10px;">✨ Add your usual top-up items</button>
+      ${showPredictiveOption ? `<button class="btn ghost small" id="ord-predictive" style="margin-bottom:10px;">${uiIcon('sparkle', 15)} Add your usual top-up items</button>
         <p class="muted" style="margin-top:-6px; margin-bottom:10px; font-size:11.5px;">Based on what this ward has ordered most over the last 3 months. Everything's added at quantity 1 — adjust or remove as needed before submitting.</p>` : ''}
-      ${showOverdueFillOption ? `<button class="btn ghost small" id="ord-overdue-fill" style="margin-bottom:10px;">⚠ Fill overdue top-up (full stocklist at max)</button>
+      ${showOverdueFillOption ? `<button class="btn ghost small" id="ord-overdue-fill" style="margin-bottom:10px;">${uiIcon('warn', 15)} Fill overdue top-up (full stocklist at max)</button>
         <p class="muted" style="margin-top:-6px; margin-bottom:10px; font-size:11.5px;">This ward's top-up wasn't submitted on time. This adds every current stocklist item at its usual max quantity — adjust or remove before submitting.</p>` : ''}
       ${lockedOut ? '' : (!items?.length ? `<div class="empty">No stocklist has been set up for this ward yet. Contact pharmacy or admin.</div>` : `
       <label>Search medicine</label>
@@ -504,9 +504,9 @@ async function renderOrderBuilder() {
             <input type="number" min="1" ${capsAtMax ? `max="${c.max_qty}"` : ''} id="cart-qty-${i}" value="${c.quantity}" style="width:48px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:2px 0; font-weight:700;" />
             <button data-inc="${i}">+</button>
           </div>
-          <button data-remove="${i}" title="Remove" style="margin-left:10px;">✕</button>
+          <button data-remove="${i}" title="Remove" style="margin-left:10px;">${uiIcon('x', 14)}</button>
         </div>
-        ${overMax ? `<p style="color:#8a6d00; background:#fff8e1; border:1px solid #f0d98c; border-radius:8px; padding:6px 10px; font-size:12.5px; margin:6px 0 0;">⚠ Items above max quantity require pharmacist approval and may cause delays in processing.</p>` : ''}
+        ${overMax ? `<p style="color:#8a6d00; background:#fff8e1; border:1px solid #f0d98c; border-radius:8px; padding:6px 10px; font-size:12.5px; margin:6px 0 0;">${uiIcon('warn', 14)} Items above max quantity require pharmacist approval and may cause delays in processing.</p>` : ''}
       </div>`;
     }).join('');
     listEl.querySelectorAll('[data-dec]').forEach(b => b.onclick = () => {

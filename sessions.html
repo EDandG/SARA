@@ -435,7 +435,7 @@ async function renderProcessingModalBody(sessionId) {
       ${dupEligible.has(o.id) ? `<button class="btn small ghost" data-dup="${o.id}">Mark duplicate</button>` : ''}
       ${canMarkNonUrgent() ? `<button class="btn small ghost" data-nonurgent="${o.id}">Non-urgent</button>` : ''}
       <button class="btn small warn" data-oos="${o.id}">Out of stock</button>
-      <button class="btn small go" data-complete="${o.id}">\u2713 Complete</button>`;
+      <button class="btn small go" data-complete="${o.id}">${uiIcon('check', 13)} Complete</button>`;
 
   mount.innerHTML = `${head(submittedLine)}
     ${progress()}

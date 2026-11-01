@@ -401,6 +401,7 @@ tr.row-flash { animation: row-flash-fade 3s ease-out; }
 .seg a:hover{ background:var(--teal-pale); color:var(--navy); }
 .seg a.on{ background:var(--navy); color:#fff; box-shadow:0 1px 3px rgba(26,39,68,.25); }
 .page-head{ display:flex; align-items:center; gap:14px; padding:2px 2px 0; }
+.ui-ic{ display:inline-block; vertical-align:-3px; flex:none; }
 .page-head .ph-icon{
   width:44px; height:44px; border-radius:12px; flex-shrink:0; display:flex; align-items:center; justify-content:center;
   font-size:21px; background:linear-gradient(145deg,var(--navy),var(--navy-mid)); color:#fff;

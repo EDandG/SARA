@@ -95,6 +95,12 @@ async function renderLogs() {
       ${systemSettings.audit_log_cleared ? `<p class="muted" style="font-size:12px;">Last cleared: ${esc(systemSettings.audit_log_cleared)}</p>` : ''}
       <button class="btn danger" id="clear-audit-btn">Clear audit log\u2026</button>
     </div>
+    ` : ''}    ${isDeveloper() ? `
+    <div class="card" style="border:2px solid var(--red);">
+      <h2 style="color:var(--red);">Danger zone</h2>
+      <p class="muted"><b>Hard reset.</b> Deletes absolutely everything except the Developer login details: all other users, sites, wards, stocklists, the drug catalogue, sections, titles, orders, notices and logs. You can choose to keep bank holidays and system settings. This cannot be undone \u2014 download your data first.</p>
+      <button class="btn danger" id="hard-reset-btn">Hard reset everything\u2026</button>
+    </div>
     ` : ''}`;
 
   document.getElementById('export-logs-btn').onclick = async () => {
@@ -145,6 +151,35 @@ async function renderLogs() {
   if (isDeveloper()) document.getElementById('clear-audit-btn').onclick = () => confirmWipe({
     title: 'Clear audit log', word: 'CLEAR AUDIT', rpc: 'clear_audit_log', done: 'Audit log cleared',
     text: 'This permanently deletes the <b>login / logout history and the stocklist change history</b>. It cannot be undone.' });
+  if (isDeveloper()) document.getElementById('hard-reset-btn').onclick = () => {
+    openModal(`${modalIcon('warn')}<h3>Hard reset everything</h3>
+      <p>This permanently deletes <b>absolutely everything except the Developer login details</b>. It cannot be undone.</p>
+      <label style="display:flex; gap:6px; align-items:center; font-weight:400;"><input type="checkbox" id="hr-holidays" style="width:auto;" checked /> Keep bank holidays</label>
+      <label style="display:flex; gap:6px; align-items:center; font-weight:400;"><input type="checkbox" id="hr-settings" style="width:auto;" checked /> Keep system settings, logos and cut-off times</label>
+      <label style="margin-top:10px;">Type <b>HARD RESET</b> to confirm</label>
+      <input type="text" id="hr-word" autocomplete="off" />
+      <label style="margin-top:8px;">Re-enter your password</label>
+      <input type="password" id="hr-pw" autocomplete="current-password" />
+      <div class="modal-error" id="hr-error"></div>
+      <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn danger" id="hr-go">Hard reset</button></div>`);
+    document.getElementById('hr-go').onclick = async () => {
+      const errEl = document.getElementById('hr-error');
+      if (document.getElementById('hr-word').value.trim() !== 'HARD RESET') { errEl.textContent = 'Type HARD RESET exactly to continue.'; return; }
+      const pw = document.getElementById('hr-pw').value;
+      if (!pw) { errEl.textContent = 'Enter your password.'; return; }
+      const btn = document.getElementById('hr-go'); btn.disabled = true;
+      const { data: { session } } = await sb.auth.getSession();
+      const { error: authErr } = await sb.auth.signInWithPassword({ email: session.user.email, password: pw });
+      if (authErr) { errEl.textContent = 'Incorrect password.'; btn.disabled = false; return; }
+      const { data: n, error } = await sb.rpc('hard_reset_everything', {
+        p_keep_holidays: document.getElementById('hr-holidays').checked,
+        p_keep_settings: document.getElementById('hr-settings').checked });
+      if (error) { errEl.textContent = error.message; btn.disabled = false; return; }
+      closeModal();
+      toast(`Hard reset complete (${n ?? 0} user${n === 1 ? '' : 's'} removed).`);
+      setTimeout(() => { window.location.href = 'home.html'; }, 1500);
+    };
+  };
   document.getElementById('export-audit-btn').onclick = async () => {
     const [{ data: ev }, { data: hist }, { data: ppl }] = await Promise.all([
       sb.from('login_events').select('*').order('created_at', { ascending: false }),

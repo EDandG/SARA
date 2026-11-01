@@ -228,7 +228,7 @@
     const okMailed = rows.filter(r => r.emailed).length;
     const bad = rows.filter(r => !r.ok && !r.link);
     let html = '';
-    if (okMailed) html += `<div class="diffline add">✓ ${okMailed} invitation${okMailed > 1 ? 's' : ''} emailed.</div>`;
+    if (okMailed) html += `<div class="diffline add">${uiIcon('check', 14)} ${okMailed} invitation${okMailed > 1 ? 's' : ''} emailed.</div>`;
     if (bad.length) html += bad.map(r => `<div class="diffline rem">${esc(r.email)}: ${esc(r.error || 'failed')}</div>`).join('');
     if (needLinks.length) {
       html += `<div class="muted" style="margin:8px 0;">${out.email_configured === false
@@ -346,7 +346,7 @@
     if (!val) { useridStatusEl.textContent = ''; return; }
     useridCheckTimer = setTimeout(async () => {
       const { data: exists } = await sb.rpc('user_id_exists', { candidate: val });
-      useridStatusEl.textContent = exists ? '\u26a0 already taken' : '\u2713 available';
+      useridStatusEl.innerHTML = exists ? uiIcon('warn', 13) + ' already taken' : uiIcon('check', 13) + ' available';
       useridStatusEl.style.color = exists ? 'var(--red)' : 'var(--teal)';
     }, 400);
   });
@@ -453,7 +453,8 @@
           ${u.role === 'developer' || u.id === profile.id ? '' : `<button class="btn small ghost" data-setemail="${u.id}">${u.email_hash ? 'Change email' : 'Add email'}</button>`}
           ${u.role === 'developer' ? '<span class="muted" style="font-size:12px;">Managed via Supabase</span>' : `
           ${u.id !== profile.id ? `<button class="btn small ghost" data-reset="${u.id}">Reset password</button>` : ''}
-          ${canSusp ? `<button class="btn small ${u.active ? 'danger' : 'magenta'}" data-susp="${u.id}">${u.active ? 'Suspend' : 'Reactivate'}</button>` : ''}`}
+          ${canSusp ? `<button class="btn small ${u.active ? 'danger' : 'magenta'}" data-susp="${u.id}">${u.active ? 'Suspend' : 'Reactivate'}</button>` : ''}
+          ${isDeveloper() && u.id !== profile.id ? `<button class="btn small danger" data-deluser="${u.id}">Delete</button>` : ''}`}
         </div>
         <div class="access-panel" id="access-panel-${u.id}"></div>
       </div>
@@ -501,6 +502,22 @@
   renderUserTableRoot();
 
   function attachRowHandlers(root, list) {
+    root.querySelectorAll('[data-deluser]').forEach(b => b.onclick = () => {
+      if (!isDeveloper()) return;
+      const u = list.find(x => x.id === b.dataset.deluser);
+      openModal(`${modalIcon('warn')}<h3>Delete ${esc(u.full_name || 'this user')}?</h3>
+        <p class="muted">This permanently removes the login and their ward and site access. It cannot be undone. If they appear on any orders it is refused \u2014 suspend them instead.</p>
+        <label>Type <b>DELETE</b> to confirm</label><input type="text" id="du-word" autocomplete="off" />
+        <div class="modal-error" id="du-err"></div>
+        <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn danger" id="du-go">Delete user</button></div>`);
+      document.getElementById('du-go').onclick = async () => {
+        if (document.getElementById('du-word').value.trim() !== 'DELETE') { document.getElementById('du-err').textContent = 'Type DELETE exactly to continue.'; return; }
+        const { error } = await sb.rpc('developer_delete_user', { p_target: u.id });
+        if (error) { document.getElementById('du-err').textContent = error.message; return; }
+        closeModal(); toast('User deleted.'); renderUsers();
+      };
+    });
+
     root.querySelectorAll('[data-susp]').forEach(b => b.onclick = async () => {
       const u = list.find(x => x.id === b.dataset.susp);
       const { error } = await sb.from('profiles').update({ active: !u.active }).eq('id', u.id);

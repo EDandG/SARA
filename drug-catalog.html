@@ -43,10 +43,10 @@ async function renderDrugCatalog() {
   body.innerHTML = `
     ${isDeveloper() ? `
     <div class="card">
-      <h2>Import from spreadsheet</h2>
-      <p class="muted">Drop an Excel or CSV sheet below, then pick which column holds the <b>drug name</b> and which holds the <b>pack size</b>. You see a preview before anything is saved. Drugs already in the catalogue are not duplicated. Build the catalogue first; stocklists are then built from it inside the app.</p>
-      <div class="file-drop" id="drop-zone" style="margin-top:12px;">Drop an Excel or CSV sheet here, or click to choose one</div>
-      <input type="file" id="csv-input" accept=".csv,.xlsx,.xls" class="hidden" />
+      <h2>Import from spreadsheets</h2>
+      <p class="muted">Drop one or more Excel or CSV sheets at once. For each sheet, choose its <b>class</b> (for example Injection or TTO pack \u2014 create these under Sections first), then pick the drug name and pack size columns. Drugs already in the catalogue, or repeated across sheets, are only added once, and every drug is tagged with its sheet\u2019s class so it lands in the right section when you build stocklists.</p>
+      <div class="file-drop" id="drop-zone">Drop Excel or CSV sheets here, or click to choose them</div>
+      <input type="file" id="csv-input" accept=".csv,.xlsx,.xls" class="hidden" multiple />
       <div id="csv-preview"></div>
     </div>
     <div class="card">
@@ -75,9 +75,9 @@ async function renderDrugCatalog() {
 
   if (isDeveloper()) {
     document.getElementById('drop-zone').onclick = () => document.getElementById('csv-input').click();
-    document.getElementById('csv-input').onchange = handleCatalogCsv;
+    document.getElementById('csv-input').onchange = () => { addCatalogFiles(Array.from(document.getElementById('csv-input').files)); document.getElementById('csv-input').value = ''; };
     document.getElementById('drop-zone').ondragover = (e) => e.preventDefault();
-    document.getElementById('drop-zone').ondrop = (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) { document.getElementById('csv-input').files = e.dataTransfer.files; handleCatalogCsv(); } };
+    document.getElementById('drop-zone').ondrop = (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) { addCatalogFiles(Array.from(e.dataTransfer.files)); } };
 
     document.getElementById('add-drug-btn').onclick = async () => {
       const name = document.getElementById('add-drug-name').value.trim();
@@ -261,81 +261,131 @@ async function openSectionPicker(sectionId, sectionName) {
   draw();
 }
 
-let catalogSheet = [];
+// ---------- Multi-sheet import: each sheet is tagged with a class (section) ----------
+let catalogFiles = [];     // { id, name, rows, header, nameCol, packCol, sectionId }
+let catalogSections = [];
+let catFileSeq = 0;
 const catColLabel = (i, h) => String.fromCharCode(65 + (i % 26)) + (h ? ': ' + h : '');
 
-async function handleCatalogCsv() {
-  const file = document.getElementById('csv-input').files[0];
-  if (!file) return;
-  const preview = document.getElementById('csv-preview');
-  try {
-    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
-    catalogSheet = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })
-      .filter(r => r.some(c => String(c).trim() !== ''));
-  } catch (e) { toast('Could not read that file: ' + e.message, true); return; }
-  if (!catalogSheet.length) { preview.innerHTML = '<p class="muted" style="margin-top:12px;">The file is empty.</p>'; return; }
-  const ncol = Math.max(...catalogSheet.map(r => r.length));
-  const first = catalogSheet[0].map(c => String(c).trim());
-  const looksHeader = first.filter(c => c && isNaN(Number(c))).length >= Math.ceil(first.filter(Boolean).length / 2);
-  const find = re => first.findIndex(c => re.test(c));
-  const gName = looksHeader ? find(/drug|medic|item|name|product|description/i) : 0;
-  const gPack = looksHeader ? find(/pack|size|form/i) : -1;
-  const opt = (sel, req) => `<option value="-1">${req ? 'Choose a column…' : '— none —'}</option>` +
-    Array.from({ length: ncol }, (_, i) => `<option value="${i}" ${sel === i ? 'selected' : ''}>${esc(catColLabel(i, looksHeader ? first[i] : ''))}</option>`).join('');
-  preview.innerHTML = `
-    <p class="muted" style="margin-top:12px;"><b>${esc(file.name)}</b> — ${catalogSheet.length} row${catalogSheet.length === 1 ? '' : 's'}.</p>
-    <label style="display:flex; gap:6px; align-items:center; font-weight:400;"><input type="checkbox" id="cat-hdr" style="width:auto;" ${looksHeader ? 'checked' : ''} /> First row is a heading row</label>
-    <div class="row" style="margin-top:8px;">
-      <div><label>Drug name column</label><select id="cat-c-name">${opt(gName, true)}</select></div>
-      <div><label>Pack size column <span class="muted" style="font-weight:400;">(optional)</span></label><select id="cat-c-pack">${opt(gPack, false)}</select></div>
-    </div>
-    <label style="display:flex; gap:6px; align-items:center; font-weight:400; margin-top:8px;"><input type="checkbox" id="cat-upd" style="width:auto;" /> Also update the pack size of drugs already in the catalogue</label>
-    <div id="cat-prev" style="margin-top:10px;"></div>`;
-  ['cat-hdr', 'cat-c-name', 'cat-c-pack', 'cat-upd'].forEach(id => document.getElementById(id).onchange = renderCatalogPreview);
+async function addCatalogFiles(fileList) {
+  const { data: secs } = await sb.from('drug_sections').select('id, name').order('name');
+  catalogSections = secs || [];
+  for (const file of Array.from(fileList || [])) {
+    try {
+      const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })
+        .filter(r => r.some(c => String(c).trim() !== ''));
+      if (!rows.length) { toast(`${file.name} is empty.`, true); continue; }
+      const first = rows[0].map(c => String(c).trim());
+      const header = first.filter(c => c && isNaN(Number(c))).length >= Math.ceil(first.filter(Boolean).length / 2);
+      const find = re => first.findIndex(c => re.test(c));
+      // a sheet named like a class (e.g. "Injection.xlsx") pre-selects that class
+      const base = file.name.replace(/\.[^.]+$/, '').toLowerCase();
+      const guessSec = catalogSections.find(x => base.includes(x.name.toLowerCase()));
+      catalogFiles.push({ id: ++catFileSeq, name: file.name, rows, header,
+        nameCol: header ? find(/drug|medic|item|name|product|description/i) : 0,
+        packCol: header ? find(/pack|size|form/i) : -1,
+        sectionId: guessSec ? guessSec.id : '' });
+    } catch (e) { toast(`Could not read ${file.name}: ${e.message}`, true); }
+  }
+  renderCatalogFiles();
+}
+
+function renderCatalogFiles() {
+  const out = document.getElementById('csv-preview');
+  if (!catalogFiles.length) { out.innerHTML = ''; return; }
+  const secOpts = (sel) => `<option value="">— no class —</option>` + catalogSections.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+  out.innerHTML = `
+    ${catalogSections.length ? '' : '<p class="muted" style="margin-top:12px; color:var(--amber);">No classes exist yet. Create them under Sections below first, then drop the sheets again to tag them.</p>'}
+    ${catalogFiles.map(f => {
+      const ncol = Math.max(...f.rows.map(r => r.length));
+      const head = f.rows[0].map(c => String(c).trim());
+      const opt = (sel, req) => `<option value="-1">${req ? 'Choose a column…' : '— none —'}</option>` +
+        Array.from({ length: ncol }, (_, i) => `<option value="${i}" ${sel === i ? 'selected' : ''}>${esc(catColLabel(i, f.header ? head[i] : ''))}</option>`).join('');
+      return `<div class="cat-file" data-f="${f.id}" style="border:1px solid var(--border); border-radius:10px; padding:12px; margin-top:12px;">
+        <div style="display:flex; align-items:center; gap:8px;"><b style="flex:1;">${esc(f.name)}</b><span class="muted" style="font-size:12.5px;">${f.rows.length} row${f.rows.length === 1 ? '' : 's'}</span>
+          <button class="btn small ghost" data-rmfile="${f.id}" title="Remove this sheet">${uiIcon('x', 13)}</button></div>
+        <div class="row" style="margin-top:8px;">
+          <div><label>Class (section) for this sheet</label><select data-k="sectionId">${secOpts(f.sectionId)}</select></div>
+          <div><label>Drug name column</label><select data-k="nameCol">${opt(f.nameCol, true)}</select></div>
+          <div><label>Pack size column <span class="muted" style="font-weight:400;">(optional)</span></label><select data-k="packCol">${opt(f.packCol, false)}</select></div>
+        </div>
+        <label style="display:flex; gap:6px; align-items:center; font-weight:400; margin-top:6px;"><input type="checkbox" data-k="header" style="width:auto;" ${f.header ? 'checked' : ''} /> First row is a heading row</label>
+      </div>`;
+    }).join('')}
+    <label style="display:flex; gap:6px; align-items:center; font-weight:400; margin-top:12px;"><input type="checkbox" id="cat-tag-existing" style="width:auto;" checked /> Also tag drugs already in the catalogue with the sheet’s class</label>
+    <label style="display:flex; gap:6px; align-items:center; font-weight:400; margin-top:4px;"><input type="checkbox" id="cat-upd" style="width:auto;" /> Also update the pack size of drugs already in the catalogue</label>
+    <div id="cat-prev" style="margin-top:12px;"></div>`;
+  out.querySelectorAll('.cat-file').forEach(card => {
+    const f = catalogFiles.find(x => x.id === +card.dataset.f);
+    card.querySelectorAll('[data-k]').forEach(el => el.onchange = () => {
+      const k = el.dataset.k;
+      f[k] = k === 'header' ? el.checked : (k === 'sectionId' ? el.value : parseInt(el.value, 10));
+      renderCatalogPreview();
+    });
+    card.querySelector('[data-rmfile]').onclick = () => { catalogFiles = catalogFiles.filter(x => x.id !== f.id); renderCatalogFiles(); };
+  });
+  ['cat-tag-existing', 'cat-upd'].forEach(id => document.getElementById(id).onchange = renderCatalogPreview);
   renderCatalogPreview();
 }
 
 async function renderCatalogPreview() {
   const out = document.getElementById('cat-prev');
-  const cn = parseInt(document.getElementById('cat-c-name').value, 10), cp = parseInt(document.getElementById('cat-c-pack').value, 10);
-  if (cn < 0) { out.innerHTML = '<p class="muted">Choose the drug name column to see a preview.</p>'; return; }
-  const rows = document.getElementById('cat-hdr').checked ? catalogSheet.slice(1) : catalogSheet;
-  const seen = new Set();
-  catalogPreview = [];
-  for (const row of rows) {
-    const name = String(row[cn] ?? '').replace(/\s+/g, ' ').trim();
-    if (!name || seen.has(name.toLowerCase())) continue;
-    seen.add(name.toLowerCase());
-    const pack = cp >= 0 ? String(row[cp] ?? '').trim() : '';
-    catalogPreview.push({ medicine_name: name, pack_size: pack || null });
+  if (!out) return;
+  const secName = Object.fromEntries(catalogSections.map(x => [x.id, x.name]));
+  // merge every sheet: one entry per drug, with the union of its classes
+  const merged = new Map();
+  let dupInFiles = 0, skippedNoCol = 0;
+  for (const f of catalogFiles) {
+    if (f.nameCol < 0) { skippedNoCol++; continue; }
+    (f.header ? f.rows.slice(1) : f.rows).forEach(row => {
+      const name = String(row[f.nameCol] ?? '').replace(/\s+/g, ' ').trim();
+      if (!name) return;
+      const pack = f.packCol >= 0 ? String(row[f.packCol] ?? '').trim() : '';
+      const key = name.toLowerCase();
+      const e = merged.get(key);
+      if (e) { dupInFiles++; if (!e.pack_size && pack) e.pack_size = pack; if (f.sectionId) e.sections.add(f.sectionId); }
+      else merged.set(key, { medicine_name: name, pack_size: pack || null, sections: new Set(f.sectionId ? [f.sectionId] : []) });
+    });
   }
+  const items = [...merged.values()];
+  catalogPreview = items;
+  if (!items.length) { out.innerHTML = `<p class="muted">${skippedNoCol ? 'Choose the drug name column for each sheet.' : 'No drug names found.'}</p>`; return; }
   const { data: existing } = await sb.from('drug_catalog').select('id, medicine_name, pack_size');
   const exMap = new Map((existing || []).map(r => [r.medicine_name.trim().toLowerCase(), r]));
-  const newOnes = catalogPreview.filter(i => !exMap.has(i.medicine_name.toLowerCase()));
-  const updatable = document.getElementById('cat-upd').checked
-    ? catalogPreview.filter(i => { const e = exMap.get(i.medicine_name.toLowerCase()); return e && i.pack_size && e.pack_size !== i.pack_size; }).map(i => ({ id: exMap.get(i.medicine_name.toLowerCase()).id, pack_size: i.pack_size }))
-    : [];
-  const already = catalogPreview.length - newOnes.length;
-  if (!catalogPreview.length) { out.innerHTML = '<p class="muted">No drug names found in that column.</p>'; return; }
+  const tagExisting = document.getElementById('cat-tag-existing').checked;
+  const updPack = document.getElementById('cat-upd').checked;
+  const newOnes = items.filter(i => !exMap.has(i.medicine_name.toLowerCase()));
+  const already = items.length - newOnes.length;
+  const packUpdates = updPack ? items.filter(i => { const e = exMap.get(i.medicine_name.toLowerCase()); return e && i.pack_size && e.pack_size !== i.pack_size; }).map(i => ({ id: exMap.get(i.medicine_name.toLowerCase()).id, pack_size: i.pack_size })) : [];
+  const tagLinks = [];   // { name(lower), sectionId }
+  items.forEach(i => { const isNew = !exMap.has(i.medicine_name.toLowerCase()); if (isNew || tagExisting) i.sections.forEach(sid => tagLinks.push({ key: i.medicine_name.toLowerCase(), sectionId: sid })); });
+  const untagged = newOnes.filter(i => !i.sections.size).length;
   out.innerHTML = `
-    <p class="muted">${catalogPreview.length} drug${catalogPreview.length === 1 ? '' : 's'} read — ${newOnes.length} new, ${already} already in the catalogue${updatable.length ? `, ${updatable.length} pack size${updatable.length === 1 ? '' : 's'} to update` : ''}.</p>
-    <table><thead><tr><th>Drug name</th><th>Pack size</th><th></th></tr></thead><tbody>
-    ${catalogPreview.slice(0, 10).map(i => `<tr><td>${esc(i.medicine_name)}</td><td>${esc(i.pack_size || '')}</td><td class="muted">${exMap.has(i.medicine_name.toLowerCase()) ? 'Already there' : 'New'}</td></tr>`).join('')}
-    </tbody></table>${catalogPreview.length > 10 ? `<p class="muted" style="font-size:12px;">Showing the first 10 of ${catalogPreview.length}.</p>` : ''}
-    <button class="btn magenta" id="confirm-catalog-import" style="margin-top:10px;" ${(newOnes.length || updatable.length) ? '' : 'disabled'}>Import ${newOnes.length} new drug${newOnes.length === 1 ? '' : 's'}${updatable.length ? ` and update ${updatable.length}` : ''}</button>`;
+    <p class="muted"><b>${items.length}</b> different drug${items.length === 1 ? '' : 's'} across ${catalogFiles.length} sheet${catalogFiles.length === 1 ? '' : 's'} — <b>${newOnes.length}</b> new, ${already} already in the catalogue${dupInFiles ? `, ${dupInFiles} repeated between rows or sheets (counted once)` : ''}. ${tagLinks.length} class tag${tagLinks.length === 1 ? '' : 's'} to apply${packUpdates.length ? `, ${packUpdates.length} pack size${packUpdates.length === 1 ? '' : 's'} to update` : ''}.${untagged ? ` <span style="color:var(--amber);">${untagged} new drug${untagged === 1 ? ' has' : 's have'} no class.</span>` : ''}</p>
+    <table><thead><tr><th>Drug name</th><th>Pack size</th><th>Class</th><th></th></tr></thead><tbody>
+    ${items.slice(0, 12).map(i => `<tr><td>${esc(i.medicine_name)}</td><td>${esc(i.pack_size || '')}</td><td>${esc([...i.sections].map(x => secName[x]).join(', ') || '—')}</td><td class="muted">${exMap.has(i.medicine_name.toLowerCase()) ? 'Already there' : 'New'}</td></tr>`).join('')}
+    </tbody></table>${items.length > 12 ? `<p class="muted" style="font-size:12px;">Showing the first 12 of ${items.length}.</p>` : ''}
+    <button class="btn magenta" id="confirm-catalog-import" style="margin-top:10px;" ${(newOnes.length || tagLinks.length || packUpdates.length) ? '' : 'disabled'}>Import ${newOnes.length} new drug${newOnes.length === 1 ? '' : 's'}${tagLinks.length ? ` and apply ${tagLinks.length} class tag${tagLinks.length === 1 ? '' : 's'}` : ''}</button>`;
 
   document.getElementById('confirm-catalog-import').onclick = async () => {
     const btn = document.getElementById('confirm-catalog-import'); btn.disabled = true;
     if (newOnes.length) {
-      const { error } = await sb.from('drug_catalog').insert(newOnes.map(i => ({ ...i, created_by: profile.id })));
+      const { error } = await sb.from('drug_catalog').insert(newOnes.map(i => ({ medicine_name: i.medicine_name, pack_size: i.pack_size, created_by: profile.id })));
       if (error) { toast(error.message, true); btn.disabled = false; return; }
     }
-    for (const u of updatable) await sb.from('drug_catalog').update({ pack_size: u.pack_size }).eq('id', u.id);
-    toast(`${newOnes.length} drug${newOnes.length === 1 ? '' : 's'} imported${updatable.length ? `, ${updatable.length} updated` : ''}.`);
-    document.getElementById('csv-input').value = '';
-    catalogPreview = []; catalogSheet = [];
+    for (const u of packUpdates) await sb.from('drug_catalog').update({ pack_size: u.pack_size }).eq('id', u.id);
+    if (tagLinks.length) {
+      const { data: all } = await sb.from('drug_catalog').select('id, medicine_name');
+      const idBy = new Map((all || []).map(r => [r.medicine_name.trim().toLowerCase(), r.id]));
+      const rows = tagLinks.map(t => ({ drug_catalog_id: idBy.get(t.key), section_id: t.sectionId })).filter(r => r.drug_catalog_id);
+      const { error } = await sb.from('drug_catalog_sections').upsert(rows, { onConflict: 'drug_catalog_id,section_id', ignoreDuplicates: true });
+      if (error) { toast(error.message, true); btn.disabled = false; return; }
+    }
+    toast(`${newOnes.length} new drug${newOnes.length === 1 ? '' : 's'} imported${tagLinks.length ? `, ${tagLinks.length} class tag${tagLinks.length === 1 ? '' : 's'} applied` : ''}.`);
+    catalogFiles = []; catalogPreview = [];
     document.getElementById('csv-preview').innerHTML = '';
-    loadCatalogList();
+    loadCatalogList(); loadSectionList();
   };
 }
 

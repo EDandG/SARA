@@ -216,8 +216,8 @@ async function renderWards() {
     const w = wards.find(x => x.id === b.dataset.del);
     const name = w ? w.name : 'this ward';
     // Three separate confirmations before a ward can be deleted.
-    confirmDialog('Delete ward (1 of 3)', `Delete <b>${esc(name)}</b>? This also deletes its stocklist and order history. This cannot be undone.`, 'Continue', () => {
-      confirmDialog('Delete ward (2 of 3)', `Are you sure? Everyone allocated to <b>${esc(name)}</b> will lose it, and its stocklist and orders will be permanently removed.`, 'Yes, continue', () => {
+    confirmDialog('Delete ward (1 of 3)', `Delete <b>${esc(name)}</b>? Its stocklist is deleted with it. A ward that has any orders can't be deleted \u2014 deactivate it instead. This cannot be undone.`, 'Continue', () => {
+      confirmDialog('Delete ward (2 of 3)', `Are you sure? Everyone allocated to <b>${esc(name)}</b> will lose it, and its stocklist will be permanently removed.`, 'Yes, continue', () => {
         openModal(`${modalIcon('warn')}<h3>Delete ward (3 of 3)</h3>
           <p class="muted">Final check. Type the ward name <b>${esc(name)}</b> to delete it permanently.</p>
           <input type="text" id="del-ward-name" autocomplete="off" />
@@ -228,7 +228,12 @@ async function renderWards() {
             document.getElementById('del-ward-error').textContent = 'The name does not match.'; return;
           }
           const { error } = await sb.from('wards').delete().eq('id', b.dataset.del);
-          if (error) { document.getElementById('del-ward-error').textContent = error.message; return; }
+          if (error) {
+            document.getElementById('del-ward-error').textContent = /order/i.test(error.message)
+              ? 'This ward has order history, so it can\u2019t be deleted. Deactivate it instead (it then disappears from ordering), or a Developer can clear order data on the Logs page first.'
+              : error.message;
+            return;
+          }
           closeModal();
           toast('Ward deleted.');
           await refreshSitesWards(); renderWards();

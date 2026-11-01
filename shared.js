@@ -845,7 +845,7 @@ async function requireAuth(options = {}) {
   });
   applyTrustLogo();
   document.querySelectorAll('[data-ward-context]').forEach(el => el.textContent = canOrder() && myWards.length
-    ? myWards.map(w => w.name).join(', ')
+    ? ''   // the header no longer lists a user's wards
     : (isSuperuser() ? 'Full system access' : isAdminRole() ? 'Admin' : isGovernance() ? 'Governance — read only' : ''));
   wireLogout();
   document.querySelectorAll('header.topbar .who').forEach(w => {
@@ -922,7 +922,7 @@ function maybePromptForEmail() {
   try { if (sessionStorage.getItem('emailPromptDismissed')) return; } catch (e) {}
   const bannerRoot = document.getElementById('banner-root'); if (!bannerRoot) return;
   const el = document.createElement('div'); el.id = 'email-prompt'; el.className = 'hbanner-stack';
-  el.innerHTML = `<div class="hbanner info" role="status"><span class="ic" aria-hidden="true">\u2709\ufe0f</span>
+  el.innerHTML = `<div class="hbanner info" role="status"><span class="ic" aria-hidden="true">${uiIcon('megaphone', 18)}</span>
     <div class="tx">Add your email address so you can reset your own password if you ever forget it.</div>
     <button class="btn small magenta" id="ep-add" style="flex:none;">Add email</button>
     <button class="btn small ghost" id="ep-later" style="flex:none;">Not now</button></div>`;
@@ -1067,26 +1067,57 @@ function buildAreaTiles() {
   return groups.map(g => ({ group: g, icon: iconFor[g] || '•', firstHref: links.find(l => l.group === g).href, label: g === 'Admin' ? (isSuperuser() ? 'System Admin' : 'User Management') : g }));
 }
 
+
+// ---------- ICON SET (replaces emoji everywhere) ----------
+const UI_ICON_PATHS = {
+  insights:  '<path d="M4 20V11M10 20V5M16 20v-6M2 20h20"/>',
+  trend:     '<path d="M3 20h18"/><path d="M5 16l4-5 4 3 6-8"/><circle cx="19" cy="6" r="1.6"/>',
+  pie:       '<path d="M12 3v9h9"/><path d="M20.5 15A9 9 0 1 1 9 3.5"/>',
+  sparkle:   '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 2 2 .7-2 .7L19 21l-.7-1.6-2-.7 2-.7z"/>',
+  hospital:  '<path d="M4 21V6l8-3 8 3v15"/><path d="M2 21h20"/><path d="M12 8v6M9 11h6"/><path d="M10 21v-4h4v4"/>',
+  bed:       '<path d="M3 18V7M3 14h18v4M21 14v-2a3 3 0 0 0-3-3h-7v5"/><circle cx="7" cy="11" r="1.6"/>',
+  users:     '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.5 0 4.5 2 4.5 4.5"/>',
+  tag:       '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/>',
+  pill:      '<rect x="2.5" y="8.5" width="19" height="7" rx="3.5" transform="rotate(-35 12 12)"/><path d="M9.5 8.5l5 7" transform="rotate(-35 12 12)"/>',
+  clipboard: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v3H9z"/><path d="M8.5 12h7M8.5 16h5"/>',
+  megaphone: '<path d="M3 10v4l11 4V6z"/><path d="M14 8c3 .5 5 1.8 5 4s-2 3.5-5 4"/><path d="M6 14l1 5h3l-1-4"/>',
+  signal:    '<circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/>',
+  calendar:  '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  gear:      '<circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.4M12 18.8v2.4M4.5 7.2l2 1.2M17.5 15.6l2 1.2M4.5 16.8l2-1.2M17.5 8.4l2-1.2M2.8 12h2.4M18.8 12h2.4"/>',
+  scroll:    '<path d="M7 3h10a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M9 8h6M9 12h6M9 16h4"/>',
+  calclock:  '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><circle cx="16" cy="16" r="2.2"/><path d="M16 15v1.2l.8.5"/>',
+  box:       '<path d="M3.5 7.5L12 3l8.5 4.5v9L12 21l-8.5-4.5z"/><path d="M3.5 7.5L12 12l8.5-4.5M12 12v9"/>',
+  ban:       '<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/>',
+  clock:     '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  hourglass: '<path d="M6 3h12M6 21h12"/><path d="M7 3c0 5 5 6 5 9s-5 4-5 9M17 3c0 5-5 6-5 9s5 4 5 9"/>',
+  check:     '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  warn:      '<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.4v.1"/>',
+  x:         '<path d="M6 6l12 12M18 6L6 18"/>',
+};
+function uiIcon(name, size = 18) {
+  return `<svg class="ui-ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${UI_ICON_PATHS[name] || ''}</svg>`;
+}
+
 const PAGE_META = {
-  'insights.html': ['\ud83d\udcca', 'Insights', 'Orders due today and how many have been processed.'],
-  'bi-analytics.html': ['\ud83d\udcc8', 'ED&G™ Business Intelligence Suite', 'Volumes, turnaround, breaches, trends and top-up compliance.'],
-  'bi-insights.html': ['\ud83d\udcca', 'ED&G™ Business Intelligence Suite', 'Most-ordered items, seasonal patterns and who is ordering what.'],
-  'bi-predictive.html': ['\u2728', 'ED&G™ Business Intelligence Suite', 'What each ward is offered by predictive top-up.'],
-  'sites.html': ['\ud83c\udfe5', 'Sites', 'Hospital sites that wards belong to.'],
-  'wards.html': ['\ud83d\udecf\ufe0f', 'Wards', 'Create wards, set top-up days, suspend them and control alternative-stock swaps.'],
-  'users.html': ['\ud83d\udc65', 'Users', 'Invite staff with permissions and wards pre-set, and manage existing accounts.'],
-  'titles.html': ['\ud83c\udff7\ufe0f', 'Titles', 'Job titles used as labels on accounts \u2014 permissions come from the tickboxes.'],
-  'drug-catalog.html': ['\ud83d\udc8a', 'Drug catalog', 'Every orderable medicine, its pack size and alternatives.'],
-  'stocklists.html': ['\ud83d\udccb', 'Stocklists', 'Per-ward min/max stock levels. Add or remove a drug across every ward.'],
-  'notifications.html': ['\ud83d\udce2', 'Banners', 'Post notices that everyone sees at the top of every page.'],
-  'active-sessions.html': ['\ud83d\udfe2', 'Active sessions', 'Who is signed in right now.'],
-  'bank-holidays.html': ['\ud83d\udcc5', 'Bank holidays', 'Dates that change top-up and turnaround timing.'],
-  'system-settings.html': ['\u2699\ufe0f', 'System settings', 'Logos, order rules, checks and other system-wide switches.'],
-  'logs.html': ['\ud83d\udcdc', 'Logs', 'System activity and errors.'],
-  'topup-days.html': ['\ud83d\uddd3\ufe0f', 'Top-up days', 'Which days each ward is topped up.'],
-  'sessions.html': ['\ud83d\udce6', 'Pending orders', 'Pick, action and confirm ward requests.'],
-  'out-of-stock.html': ['\ud83d\udeab', 'To follow orders', 'Items awaiting supply.'],
-  'processed-history.html': ['\ud83d\udd52', 'Processed (48h)', 'Requests processed in the last 48 hours.'],
+  'insights.html': ['insights', 'Insights', 'Orders due today and how many have been processed.'],
+  'bi-analytics.html': ['trend', 'ED&G™ Business Intelligence Suite', 'Volumes, turnaround, breaches, trends and top-up compliance.'],
+  'bi-insights.html': ['pie', 'ED&G™ Business Intelligence Suite', 'Most-ordered items, seasonal patterns and who is ordering what.'],
+  'bi-predictive.html': ['sparkle', 'ED&G™ Business Intelligence Suite', 'What each ward is offered by predictive top-up.'],
+  'sites.html': ['hospital', 'Sites', 'Hospital sites that wards belong to.'],
+  'wards.html': ['bed', 'Wards', 'Create wards, set top-up days, suspend them and control alternative-stock swaps.'],
+  'users.html': ['users', 'Users', 'Invite staff with permissions and wards pre-set, and manage existing accounts.'],
+  'titles.html': ['tag', 'Titles', 'Job titles used as labels on accounts \u2014 permissions come from the tickboxes.'],
+  'drug-catalog.html': ['pill', 'Drug catalog', 'Every orderable medicine, its pack size and alternatives.'],
+  'stocklists.html': ['clipboard', 'Stocklists', 'Per-ward min/max stock levels. Add or remove a drug across every ward.'],
+  'notifications.html': ['megaphone', 'Banners', 'Post notices that everyone sees at the top of every page.'],
+  'active-sessions.html': ['signal', 'Active sessions', 'Who is signed in right now.'],
+  'bank-holidays.html': ['calendar', 'Bank holidays', 'Dates that change top-up and turnaround timing.'],
+  'system-settings.html': ['gear', 'System settings', 'Logos, order rules, checks and other system-wide switches.'],
+  'logs.html': ['scroll', 'Logs', 'System activity and errors.'],
+  'topup-days.html': ['calclock', 'Top-up days', 'Which days each ward is topped up.'],
+  'sessions.html': ['box', 'Pending orders', 'Pick, action and confirm ward requests.'],
+  'out-of-stock.html': ['ban', 'To follow orders', 'Items awaiting supply.'],
+  'processed-history.html': ['clock', 'Processed (48h)', 'Requests processed in the last 48 hours.'],
 };
 
 
@@ -1214,7 +1245,7 @@ function renderPageNav(currentHref) {
   if (current && current.group === 'Admin') document.body.setAttribute('data-admin', '1');
   const meta = PAGE_META[currentHref];
   el.innerHTML = (group.length > 1 ? `<div class="nav-row"><nav class="seg">${group.map(l => `<a href="${l.href}" class="${l.href === currentHref ? 'on' : ''}">${esc(l.label)}</a>`).join('')}</nav></div>` : '') +
-    (meta ? `<div class="page-head"><div class="ph-icon">${meta[0]}</div><div><h1>${esc(meta[1])}</h1><p>${esc(meta[2])}</p></div></div>` : '');
+    (meta ? `<div class="page-head"><div class="ph-icon">${uiIcon(meta[0], 24)}</div><div><h1>${esc(meta[1])}</h1><p>${esc(meta[2])}</p></div></div>` : '');
 }
 
 // ---------- ADMIN SHARED HELPERS (sites/wards/topup-days pages) ----------
@@ -1286,7 +1317,7 @@ async function renderTopupBanner(ward, mountEl) {
 
   if (todaysTopup && todaysTopup.length) {
     mountEl.innerHTML = `<div class="card" style="background:var(--teal-pale); border-color:var(--teal);">
-      <p style="margin:0; color:var(--navy); font-weight:600;">✓ You have completed your top up request. <a href="session-detail.html?id=${todaysTopup[0].id}">See order</a></p>
+      <p style="margin:0; color:var(--navy); font-weight:600;">${uiIcon('check', 16)} You have completed your top up request. <a href="session-detail.html?id=${todaysTopup[0].id}">See order</a></p>
     </div>`;
     return;
   }
@@ -1308,7 +1339,7 @@ async function renderTopupBanner(ward, mountEl) {
       const mm = String(Math.floor((msLeft % 3600000) / 60000)).padStart(2, '0');
       const ss = String(Math.floor((msLeft % 60000) / 1000)).padStart(2, '0');
       mountEl.innerHTML = `<div class="card" style="background:#fff8e1; border-color:#f0d98c;">
-        <p style="margin:0; color:#8a6d00; font-weight:600;">⚠ Your top up day is tomorrow — please complete your top up request today.</p>
+        <p style="margin:0; color:#8a6d00; font-weight:600;">${uiIcon('warn', 16)} Your top up day is tomorrow — please complete your top up request today.</p>
         <p style="margin:4px 0 0; color:#8a6d00; font-variant-numeric:tabular-nums; font-size:20px; font-weight:700;">${hh}:${mm}:${ss} remaining</p>
       </div>`;
       return;
@@ -1323,7 +1354,7 @@ async function renderTopupBanner(ward, mountEl) {
       const mm = String(Math.floor((msLeft % 3600000) / 60000)).padStart(2, '0');
       const ss = String(Math.floor((msLeft % 60000) / 1000)).padStart(2, '0');
       mountEl.innerHTML = `<div class="card" style="background:var(--red-pale); border-color:#f0c7c0;">
-        <p style="margin:0; color:var(--red); font-weight:700;">⚠ OVERDUE — your top up request needs to be sent urgently.</p>
+        <p style="margin:0; color:var(--red); font-weight:700;">${uiIcon('warn', 16)} OVERDUE — your top up request needs to be sent urgently.</p>
         <p style="margin:4px 0 0; color:var(--red); font-variant-numeric:tabular-nums; font-size:20px; font-weight:700;">${hh}:${mm}:${ss} left today</p>
       </div>`;
       return;

@@ -47,43 +47,129 @@ function stocklistFingerprint(items) {
   return items.map(i => `${i.medicine_name}::${i.min_qty ?? ''}::${i.max_qty}`).sort().join('|');
 }
 
+let builderSections = [];        // [{id,name}]
+let builderTags = {};            // medicine_name -> [section ids]
+let builderChip = 'all';         // 'all' | 'none' | section id
+let builderView = 'all';         // 'all' | 'on' | 'off'
+
 async function loadBuilder(ward_id) {
-  const { data: current } = await sb.from('blist_items').select('medicine_name, min_qty, max_qty').eq('ward_id', ward_id);
+  const [{ data: current }, { data: secs }, { data: links }] = await Promise.all([
+    sb.from('blist_items').select('medicine_name, min_qty, max_qty').eq('ward_id', ward_id),
+    sb.from('drug_sections').select('id, name').order('name'),
+    sb.from('drug_catalog_sections').select('drug_catalog_id, section_id'),
+  ]);
   builderSnapshotAtParse = stocklistFingerprint(current || []);
   const currentByName = Object.fromEntries((current || []).map(i => [i.medicine_name, i]));
+  builderSections = secs || [];
+  const nameById = Object.fromEntries(catalog.map(c => [c.id, c.medicine_name]));
+  builderTags = {};
+  (links || []).forEach(l => { const n = nameById[l.drug_catalog_id]; if (n) (builderTags[n] ??= []).push(l.section_id); });
   builderState = {};
   catalog.forEach(c => {
     const existing = currentByName[c.medicine_name];
     builderState[c.medicine_name] = { checked: !!existing, min_qty: existing?.min_qty ?? '', max_qty: existing?.max_qty ?? 1 };
   });
+  builderChip = 'all'; builderView = 'all';
+  const copySel = document.getElementById('builder-copy-ward');
+  if (copySel) copySel.innerHTML = '<option value="">Copy from another ward…</option>' + wards.filter(w => w.id !== ward_id).map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('');
   renderBuilderList();
 }
 
-function renderBuilderList() {
+function builderVisible() {
   const search = (document.getElementById('builder-search')?.value || '').trim().toLowerCase();
+  return catalog.filter(c => {
+    const st = builderState[c.medicine_name];
+    if (c.hidden && !st?.checked) return false;
+    if (search && !c.medicine_name.toLowerCase().includes(search)) return false;
+    if (builderView === 'on' && !st.checked) return false;
+    if (builderView === 'off' && st.checked) return false;
+    const tags = builderTags[c.medicine_name] || [];
+    if (builderChip === 'none') return !tags.length;
+    if (builderChip !== 'all') return tags.includes(builderChip);
+    return true;
+  });
+}
+
+function renderBuilderList() {
   const el = document.getElementById('builder-list');
-  if (!catalog.length) { el.innerHTML = `<div class="empty">The drug catalog is empty \u2014 a developer needs to add drugs there first.</div>`; return; }
-  const visible = catalog.filter(c => (!c.hidden || builderState[c.medicine_name]?.checked) && (!search || c.medicine_name.toLowerCase().includes(search)));
-  el.innerHTML = `<div style="max-height:420px; overflow-y:auto; border:1px solid var(--border); border-radius:8px;">
+  const prevScroll = el.querySelector('[data-bld-scroll]')?.scrollTop || 0;
+  if (!catalog.length) { el.innerHTML = `<div class="empty">The drug catalog is empty — a developer needs to add drugs there first.</div>`; return; }
+  const total = catalog.filter(c => !c.hidden || builderState[c.medicine_name]?.checked).length;
+  const ticked = Object.values(builderState).filter(x => x.checked).length;
+  const visible = builderVisible();
+  // group the visible drugs under their classes (a drug in two classes appears under both)
+  const groups = [];
+  const secName = Object.fromEntries(builderSections.map(x => [x.id, x.name]));
+  const byGroup = new Map();
+  visible.forEach(c => {
+    const tags = (builderTags[c.medicine_name] || []).filter(t => builderChip === 'all' || builderChip === 'none' || t === builderChip);
+    (tags.length ? tags : ['__none']).forEach(t => { if (!byGroup.has(t)) byGroup.set(t, []); byGroup.get(t).push(c); });
+  });
+  builderSections.forEach(x => { if (byGroup.has(x.id)) groups.push([x.id, x.name, byGroup.get(x.id)]); });
+  if (byGroup.has('__none')) groups.push(['__none', builderSections.length ? 'No class' : 'All drugs', byGroup.get('__none')]);
+  const chip = (id, label, n) => `<button class="btn small ${builderChip === id ? 'magenta' : 'ghost'}" data-chip="${id}">${esc(label)}${n != null ? ` <span style="opacity:.75;">${n}</span>` : ''}</button>`;
+  const cnt = (id) => catalog.filter(c => (!c.hidden || builderState[c.medicine_name]?.checked) && (id === 'none' ? !(builderTags[c.medicine_name] || []).length : (builderTags[c.medicine_name] || []).includes(id))).length;
+  const view = (id, label) => `<button class="btn small ${builderView === id ? 'magenta' : 'ghost'}" data-view="${id}">${label}</button>`;
+  el.innerHTML = `
+    <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:8px;">
+      ${chip('all', 'All', total)}${builderSections.map(x => chip(x.id, x.name, cnt(x.id))).join('')}${builderSections.length ? chip('none', 'No class', cnt('none')) : ''}
+      <span style="flex:1;"></span>
+      ${view('all', 'All')}${view('on', 'Ticked')}${view('off', 'Not ticked')}
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px; padding:8px 10px; background:var(--bg-soft, #f4f6fa); border-radius:8px;">
+      <b style="font-size:13px;">${ticked} of ${total} ticked</b>
+      <span class="muted" style="font-size:12.5px;">${visible.length} shown</span>
+      <span style="flex:1;"></span>
+      <button class="btn small ghost" id="bld-tick-shown">Tick all shown</button>
+      <button class="btn small ghost" id="bld-untick-shown">Untick all shown</button>
+      <span class="muted" style="font-size:12.5px;">Set for ticked &amp; shown:</span>
+      <input type="number" min="0" id="bld-bulk-min" placeholder="Min" style="width:64px; text-align:center;" />
+      <input type="number" min="1" id="bld-bulk-max" placeholder="Max" style="width:64px; text-align:center;" />
+      <button class="btn small ghost" id="bld-apply">Apply</button>
+    </div>
+    <div data-bld-scroll style="max-height:460px; overflow-y:auto; border:1px solid var(--border); border-radius:8px;">
     <table><thead><tr><th style="width:36px;"></th><th>Drug</th><th class="muted">Pack size</th><th style="width:100px;">Min qty</th><th style="width:100px;">Max qty</th></tr></thead><tbody>
-    ${visible.map(c => {
-      const st = builderState[c.medicine_name];
-      return `<tr>
+    ${groups.map(([gid, gname, list]) => {
+      const on = list.filter(c => builderState[c.medicine_name].checked).length;
+      return `<tr class="bld-group"><td colspan="5" style="background:var(--bg-soft, #eef2f7); font-weight:700; padding:7px 10px;">${esc(gname)} <span class="muted" style="font-weight:400;">— ${on} of ${list.length} ticked</span>
+        <span style="float:right;"><button class="btn small ghost" data-grp-on="${gid}">Tick all</button> <button class="btn small ghost" data-grp-off="${gid}">Untick all</button></span></td></tr>` +
+      list.map(c => {
+        const st = builderState[c.medicine_name];
+        return `<tr>
         <td><input type="checkbox" class="builder-cb" data-name="${esc(c.medicine_name)}" ${st.checked ? 'checked' : ''} /></td>
         <td>${esc(c.medicine_name)}</td>
-        <td class="muted">${esc(c.pack_size || '\u2014')}</td>
-        <td><input type="number" min="0" class="builder-minqty" data-name="${esc(c.medicine_name)}" value="${st.min_qty}" placeholder="\u2014" ${st.checked ? '' : 'disabled'} style="width:60px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" /></td>
+        <td class="muted">${esc(c.pack_size || '—')}</td>
+        <td><input type="number" min="0" class="builder-minqty" data-name="${esc(c.medicine_name)}" value="${st.min_qty}" placeholder="—" ${st.checked ? '' : 'disabled'} style="width:60px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" /></td>
         <td><input type="number" min="1" class="builder-qty" data-name="${esc(c.medicine_name)}" value="${st.max_qty}" ${st.checked ? '' : 'disabled'} style="width:60px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" /></td>
-      </tr>`;
+      </tr>`; }).join('');
     }).join('')}
     </tbody></table>
-    ${!visible.length ? '<div class="empty">No catalog drugs match that search.</div>' : ''}
+    ${!visible.length ? '<div class="empty">No drugs match.</div>' : ''}
   </div>`;
 
+  const sc = el.querySelector('[data-bld-scroll]'); if (sc) sc.scrollTop = prevScroll;
+  const redraw = () => renderBuilderList();
+  el.querySelectorAll('[data-chip]').forEach(b => b.onclick = () => { builderChip = b.dataset.chip; redraw(); });
+  el.querySelectorAll('[data-view]').forEach(b => b.onclick = () => { builderView = b.dataset.view; redraw(); });
+  const groupNames = (gid) => (byGroup.get(gid) || []).map(c => c.medicine_name);
+  el.querySelectorAll('[data-grp-on]').forEach(b => b.onclick = () => { groupNames(b.dataset.grpOn).forEach(n => builderState[n].checked = true); redraw(); });
+  el.querySelectorAll('[data-grp-off]').forEach(b => b.onclick = () => { groupNames(b.dataset.grpOff).forEach(n => builderState[n].checked = false); redraw(); });
+  document.getElementById('bld-tick-shown').onclick = () => { visible.forEach(c => builderState[c.medicine_name].checked = true); redraw(); };
+  document.getElementById('bld-untick-shown').onclick = () => { visible.forEach(c => builderState[c.medicine_name].checked = false); redraw(); };
+  document.getElementById('bld-apply').onclick = () => {
+    const mn = document.getElementById('bld-bulk-min').value.trim(), mx = document.getElementById('bld-bulk-max').value.trim();
+    if (mn === '' && mx === '') return toast('Enter a min and/or max to apply.', true);
+    if (mn !== '' && mx !== '' && parseInt(mn, 10) > parseInt(mx, 10)) return toast('Min can’t be above max.', true);
+    visible.filter(c => builderState[c.medicine_name].checked).forEach(c => {
+      const st = builderState[c.medicine_name];
+      if (mn !== '') st.min_qty = Math.max(0, parseInt(mn, 10) || 0);
+      if (mx !== '') st.max_qty = Math.max(1, parseInt(mx, 10) || 1);
+    });
+    redraw();
+  };
   el.querySelectorAll('.builder-cb').forEach(cb => cb.onchange = () => {
     builderState[cb.dataset.name].checked = cb.checked;
-    el.querySelector(`.builder-minqty[data-name="${CSS.escape(cb.dataset.name)}"]`).disabled = !cb.checked;
-    el.querySelector(`.builder-qty[data-name="${CSS.escape(cb.dataset.name)}"]`).disabled = !cb.checked;
+    redraw();
   });
   el.querySelectorAll('.builder-minqty').forEach(inp => inp.oninput = () => {
     const v = inp.value.trim();
@@ -92,6 +178,18 @@ function renderBuilderList() {
   el.querySelectorAll('.builder-qty').forEach(inp => inp.oninput = () => {
     builderState[inp.dataset.name].max_qty = Math.max(1, parseInt(inp.value, 10) || 1);
   });
+}
+
+async function copyBuilderFromWard(otherId) {
+  if (!otherId) return;
+  const { data: rows, error } = await sb.from('blist_items').select('medicine_name, min_qty, max_qty').eq('ward_id', otherId);
+  if (error) return toast(error.message, true);
+  if (!rows?.length) return toast('That ward has no stocklist to copy.', true);
+  Object.values(builderState).forEach(st => { st.checked = false; });
+  let n = 0;
+  rows.forEach(r => { const st = builderState[r.medicine_name]; if (st) { st.checked = true; st.min_qty = r.min_qty ?? ''; st.max_qty = r.max_qty; n++; } });
+  renderBuilderList();
+  toast(`Copied ${n} drug${n === 1 ? '' : 's'} — review, then publish to apply.`);
 }
 
 async function publishFromBuilder() {
@@ -545,8 +643,11 @@ async function renderAdminStock() {
     </div>
     <div class="card">
       <h2>Build stocklist from catalog</h2>
-      <p class="muted">Tick what this ward stocks and set its max qty, then publish \u2014 this replaces the ward's whole stocklist with your selections here, so every drug on it is guaranteed to be a real catalog entry with a consistent name. Not seeing a drug? A developer adds it from the Drug Catalog page first.</p>
-      <div class="row" style="margin-top:8px;"><div><label>Search</label><input type="text" id="builder-search" placeholder="Filter the catalog\u2026" /></div></div>
+      <p class="muted">Tick what this ward stocks, grouped by the classes you set up in the drug catalogue. Use the class buttons to focus on one group, tick a whole class at once, or set min and max for everything ticked. Nothing changes until you press <b>Publish stocklist</b>, which replaces the ward\u2019s list with your ticks. Not seeing a drug? A developer adds it in the Drug catalogue first.</p>
+      <div class="row" style="margin-top:8px;">
+        <div><label>Search</label><input type="text" id="builder-search" placeholder="Filter the catalog\u2026" /></div>
+        <div><label>Start from another ward</label><select id="builder-copy-ward"><option value="">Copy from another ward\u2026</option></select></div>
+      </div>
       <div id="builder-list" style="margin-top:8px;">Loading\u2026</div>
       <button class="btn magenta" id="builder-publish-btn" style="margin-top:12px;">Publish stocklist</button>
     </div>
@@ -578,12 +679,14 @@ async function renderAdminStock() {
         <div style="align-self:flex-end;"><button class="btn danger small" id="bulk-remove-btn">Remove from all wards</button></div>
       </div>
     </div>
+    ${isDeveloper() ? `
     <div class="card">
       <h2>Restore from a backup file</h2>
       <p class="muted">Upload a stocklist backup (the Excel file emailed to you). You will see exactly what would change for each ward before anything is applied. Restoring a ward replaces its whole stocklist with the backup\u2019s version. Wards that are not in the file are left alone.</p>
       <input type="file" id="restore-file" accept=".xlsx,.xls" />
       <div id="restore-preview" style="margin-top:12px;"></div>
     </div>
+    ` : ''}
     <div class="card"><h2>Previous versions of this ward's stocklist</h2>
       <p class="muted" style="margin-top:0;">The three most recent versions before a change. Restoring one puts that list back for this ward; the list you are replacing is saved first, so a restore can be undone too.</p>
       <div id="stock-versions">Loading\u2026</div></div>
@@ -594,8 +697,9 @@ async function renderAdminStock() {
     loadStockHistory();
     loadBuilder(document.getElementById('stock-ward').value);
   };
-  document.getElementById('restore-file').onchange = handleRestoreFile;
+  if (isDeveloper()) document.getElementById('restore-file').onchange = handleRestoreFile;
   document.getElementById('builder-search').oninput = renderBuilderList;
+  document.getElementById('builder-copy-ward').onchange = (e) => { copyBuilderFromWard(e.target.value); e.target.value = ''; };
   document.getElementById('builder-publish-btn').onclick = publishFromBuilder;
   document.getElementById('export-pdf-btn').onclick = () => exportStocklistPdf(document.getElementById('stock-ward').value);
 
