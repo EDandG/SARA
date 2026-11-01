@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Stocklists</title>
+<title>StockFlow — Stocklists</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
-<script src="vendor/jspdf.umd.min.js"></script>
-<script src="vendor/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@4.2.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 </head>
 <body data-page="stocklists.html">
 <div id="app">
@@ -17,7 +17,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">Stock Req</div>
+        <div class="name">StockFlow</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -443,7 +443,7 @@ async function loadStockList() {
   if (error) { listEl.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
   if (!data?.length) { listEl.innerHTML = `<div class="empty">No stocklist uploaded for this ward yet.</div>`; return; }
   const canEdit = canManageStocklists();
-  listEl.innerHTML = `<table><thead><tr><th>Medicine</th><th>Min qty</th><th>Max qty</th>${canEdit ? '<th>Restricted reorder</th><th></th>' : ''}</tr></thead><tbody>
+  listEl.innerHTML = `<table><thead><tr><th>Medicine</th><th>Min qty</th><th>Max qty</th>${canEdit ? '<th>Restricted</th><th></th>' : ''}</tr></thead><tbody>
     ${data.map(i => `<tr>
       <td>${esc(i.medicine_name)}</td>
       <td>${canEdit
@@ -452,7 +452,7 @@ async function loadStockList() {
       <td>${canEdit
         ? `<input type="number" min="1" id="maxqty-${i.id}" value="${i.max_qty}" style="width:64px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0;" />`
         : i.max_qty}</td>
-      ${canEdit ? `<td><label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="reorder-approval-cb" data-item="${i.id}" ${i.requires_reorder_approval ? 'checked' : ''} style="width:auto;" />Flagged</label></td>
+      ${canEdit ? `<td>${restrictedDrugs.has(i.medicine_name) ? '<span class="capsule">Restricted</span>' : '<span class="muted">\u2014</span>'}</td>
       <td style="text-align:right; white-space:nowrap;">
         <button class="btn small ghost" data-save-qty="${i.id}">Save</button>
         <button class="btn small danger" data-remove-item="${i.id}" data-name="${esc(i.medicine_name)}">Remove</button>
@@ -490,21 +490,6 @@ async function loadStockList() {
           loadStockHistory();
         } });
     });
-    listEl.querySelectorAll('.reorder-approval-cb').forEach(cb => cb.onchange = () => {
-      const wanted = cb.checked;
-      const nm = cb.closest('tr')?.querySelector('td')?.textContent?.trim() || 'this drug';
-      confirmChange({ scope: 'ward', wardName: wards.find(w => w.id === ward_id)?.name || '',
-        title: wanted ? `Restrict repeat orders of ${nm}` : `Stop restricting repeat orders of ${nm}`,
-        details: wanted ? 'A repeat order within the reorder-approval window will be held for a pharmacist or approved technician.' : '',
-        confirmLabel: 'Confirm change',
-        onCancel: () => { cb.checked = !wanted; },
-        onConfirm: async () => {
-          const { error: updErr } = await sb.from('blist_items').update({ requires_reorder_approval: wanted }).eq('id', cb.dataset.item);
-          if (updErr) { toast(updErr.message, true); cb.checked = !wanted; return; }
-          toast(wanted ? 'This drug is now restricted for this ward.' : 'No longer restricted for this ward.');
-          loadStockHistory();
-        } });
-    });
   }
 }
 
@@ -521,6 +506,7 @@ async function handleRestoreFile() {
   out.textContent = 'Reading the file…';
   let rows;
   try {
+    if (file.size > 5 * 1024 * 1024) { toast('That file is too large (limit 5 MB). Use a smaller spreadsheet.', true); return; }
     const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
     const ws = wb.Sheets['Stocklists'] || wb.Sheets[wb.SheetNames[0]];
     rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
@@ -529,7 +515,7 @@ async function handleRestoreFile() {
   const norm = (k) => String(k).trim().toLowerCase();
   const pick = (r, ...names) => { for (const k of Object.keys(r)) if (names.includes(norm(k))) return r[k]; return ''; };
   if (!rows.length || !('medicine' in Object.fromEntries(Object.keys(rows[0]).map(k => [norm(k), 1])))) {
-    out.innerHTML = '<div class="empty">This does not look like a Stock Req backup — expected a sheet called “Stocklists” with columns Site, Ward, Medicine, Min qty, Max qty.</div>'; return;
+    out.innerHTML = '<div class="empty">This does not look like a StockFlow backup — expected a sheet called “Stocklists” with columns Site, Ward, Medicine, Min qty, Max qty.</div>'; return;
   }
 
   const catalogByLower = Object.fromEntries(catalog.map(c => [c.medicine_name.toLowerCase(), c.medicine_name]));

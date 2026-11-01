@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Business Intelligence: Analytics</title>
+<title>StockFlow — Business Intelligence: Analytics</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
 <script src="vendor/chart.umd.min.js"></script>
-<script src="vendor/xlsx.full.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 </head>
 <body data-page="bi-analytics.html">
 <div id="app">
@@ -17,7 +17,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">Stock Req</div>
+        <div class="name">StockFlow</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -683,7 +683,7 @@ function exportInsightsToExcel() {
   ];
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(trendsAoa), 'Adhoc trends');
 
-  XLSX.writeFile(wb, `stock-req-insights-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  XLSX.writeFile(wb, `stockflow-insights-${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
 // ---------- TOP-UP COMPLIANCE ----------

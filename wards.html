@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Wards</title>
+<title>StockFlow — Wards</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -15,7 +15,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">Stock Req</div>
+        <div class="name">StockFlow</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -33,7 +33,7 @@
 <div id="toast-root"></div>
 
 <script src="vendor/supabase.js"></script>
-<script src="vendor/xlsx.full.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="shared.js"></script>
 <script>
 async function renderWards() {
@@ -92,6 +92,7 @@ async function renderWards() {
       const prev = document.getElementById('bulk-preview');
       let rows;
       try {
+        if (f.size > 5 * 1024 * 1024) { toast('That file is too large (limit 5 MB). Use a smaller spreadsheet.', true); return; }
         const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
         rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' });
       } catch (e) { prev.innerHTML = '<div class="modal-error">Could not read that file.</div>'; return; }

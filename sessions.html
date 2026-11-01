@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Sessions</title>
+<title>StockFlow — Sessions</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -15,7 +15,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">Stock Req</div>
+        <div class="name">StockFlow</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -427,7 +427,14 @@ async function renderProcessingModalBody(sessionId) {
   }
 
   // isMine: full picking UI.
-  procModalHeartbeat = setInterval(() => { sb.rpc('heartbeat_processing_claim', { target_session: sessionId }); }, 5 * 60000);
+  procModalHeartbeat = setInterval(async () => {
+    const { data: stillMine, error } = await sb.rpc('heartbeat_processing_claim', { target_session: sessionId });
+    if (!error && stillMine === false) {
+      clearInterval(procModalHeartbeat); procModalHeartbeat = null;
+      toast('You no longer hold this request \u2014 someone else took over or you were signed out. Nothing further can be saved from this screen.', true);
+      closeModal(); renderPending();
+    }
+  }, 5 * 60000);
 
   const actionsFor = (o) => o.status !== 'pending' ? '' : `
       ${substitutesByOrderId[o.id] ? `<button class="btn small ghost" data-substitute="${o.id}">Send alternative</button>` : ''}

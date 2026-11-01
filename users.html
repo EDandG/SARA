@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Users</title>
+<title>StockFlow — Users</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -15,7 +15,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">Stock Req</div>
+        <div class="name">StockFlow</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -366,7 +366,7 @@
   function userRowHtml(u) {
     const caps = [
       u.can_order && 'Order', u.can_process && 'Process', u.can_check_picking && 'Checker', u.can_view_dashboard && 'Dashboard',
-      u.can_approve_orders && 'Approve', u.can_mark_nonurgent && 'Non-urgent', u.can_manage_users && 'Manage users',
+      u.can_approve_orders && 'Approve', u.can_approve_restricted && 'Approve restricted', u.can_mark_nonurgent && 'Non-urgent', u.can_manage_users && 'Manage users',
       u.can_manage_ward_staff && 'Manage ward staff', u.can_manage_stocklists && 'Stocklists', u.can_manage_wards_sites && 'Wards/sites',
       u.can_view_bi && 'BI', u.can_post_banners && 'Banners', u.can_manage_catalogue && 'Catalogue', u.can_manage_calendar && 'Calendar', u.can_view_logs && 'Logs', u.can_check_own_picking && 'Checks own work',
     ].filter(Boolean);

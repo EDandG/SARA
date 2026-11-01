@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Drug Catalog</title>
+<title>StockFlow — Drug Catalog</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -15,7 +15,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">Stock Req</div>
+        <div class="name">StockFlow</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -32,7 +32,7 @@
 <div id="modal-root"></div>
 <div id="toast-root"></div>
 
-<script src="vendor/xlsx.full.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script src="vendor/supabase.js"></script>
 <script src="shared.js"></script>
 <script>
@@ -277,6 +277,7 @@ async function addCatalogFiles(fileList) {
   catalogSections = secs || [];
   for (const file of Array.from(fileList || [])) {
     try {
+      if (file.size > 5 * 1024 * 1024) { toast('That file is too large (limit 5 MB). Use a smaller spreadsheet.', true); return; }
       const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
       const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '' })
         .filter(r => r.some(c => String(c).trim() !== ''));
@@ -394,6 +395,7 @@ async function renderCatalogPreview() {
   };
 }
 
+const selectedDrugs = new Set();
 async function loadCatalogList() {
   const el = document.getElementById('catalog-list');
   const { data, error } = await sb.from('drug_catalog').select('*').order('medicine_name');
@@ -409,16 +411,28 @@ async function loadCatalogList() {
   const q = (document.getElementById('cat-search')?.value || '').trim().toLowerCase();
   const cf = document.getElementById('cat-class-filter')?.value || '';
   const shown = data.filter(d => (!q || d.medicine_name.toLowerCase().includes(q)) &&
-    (!cf || (cf === 'none' ? !(tagsByDrug[d.id] || []).length : (tagsByDrug[d.id] || []).includes(cf))));
+    (!cf || (cf === 'restricted' ? d.restricted : cf === 'none' ? !(tagsByDrug[d.id] || []).length : (tagsByDrug[d.id] || []).includes(cf))));
+  const allShownTicked = shown.length > 0 && shown.every(d => selectedDrugs.has(d.id));
+  const nSel = selectedDrugs.size;
 
   el.innerHTML = `<div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
       <input type="text" id="cat-search" placeholder="Search the catalogue\u2026" value="${esc(q)}" style="max-width:260px;" />
       <select id="cat-class-filter" style="max-width:220px;"><option value="">All classes</option>
-        ${(sections || []).map(x => `<option value="${x.id}" ${cf === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="none" ${cf === 'none' ? 'selected' : ''}>No class</option></select>
+        ${(sections || []).map(x => `<option value="${x.id}" ${cf === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="none" ${cf === 'none' ? 'selected' : ''}>No class</option><option value="restricted" ${cf === 'restricted' ? 'selected' : ''}>Restricted only</option></select>
       <span class="muted" style="font-size:12.5px;">${shown.length} of ${data.length} drug${data.length === 1 ? '' : 's'}</span></div>
-    <table><thead><tr><th>Medicine</th><th class="muted">Pack size</th><th>Class</th><th></th></tr></thead><tbody>
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px; padding:8px 10px; background:var(--teal-pale); border-radius:8px;">
+      <b style="font-size:13px;">${nSel} selected</b>
+      <button class="btn small" id="cat-tag-restricted" ${nSel ? '' : 'disabled'}>Tag as restricted</button>
+      <button class="btn small ghost" id="cat-untag-restricted" ${nSel ? '' : 'disabled'}>Remove restricted tag</button>
+      <button class="btn small" id="cat-tag-emerg" ${nSel ? '' : 'disabled'}>Mark emergency stock</button>
+      <button class="btn small ghost" id="cat-untag-emerg" ${nSel ? '' : 'disabled'}>Unmark emergency stock</button>
+      <button class="btn small ghost" id="cat-clear-sel" ${nSel ? '' : 'disabled'}>Clear selection</button>
+      <span class="muted" style="font-size:12px; margin-left:auto;">Restricted drugs ordered again by the same ward within ${esc(systemSettings.reorder_approval_window_hours || '24')} hours need approval \u2014 currently <b>${restrictedReorderOn() ? 'ON' : 'OFF'}</b> (the Developer switches this in System settings).</span>
+    </div>
+    <table><thead><tr><th style="width:28px;"><input type="checkbox" id="cat-all" style="width:auto;" ${allShownTicked ? 'checked' : ''} title="Tick every drug shown" /></th><th>Medicine</th><th class="muted">Pack size</th><th>Class</th><th></th></tr></thead><tbody>
     ${shown.map(d => `<tr style="${d.hidden ? 'opacity:.6;' : ''}">
-      <td>${esc(d.medicine_name)}${d.hidden ? ' <span class="muted" style="font-size:12px;">(hidden)</span>' : ''}</td>
+      <td><input type="checkbox" class="cat-sel" data-id="${d.id}" style="width:auto;" ${selectedDrugs.has(d.id) ? 'checked' : ''} /></td>
+      <td>${esc(d.medicine_name)}${d.restricted ? ' <span class="capsule" style="margin-left:4px;">Restricted</span>' : ''}${d.emergency_stock ? ' <span class="capsule" style="margin-left:4px;">Emergency stock</span>' : ''}${d.hidden ? ' <span class="muted" style="font-size:12px;">(hidden)</span>' : ''}</td>
       <td class="muted">${esc(d.pack_size || '\u2014')}</td>
       <td>${(tagsByDrug[d.id] || []).map(id => `<span class="capsule" style="margin-right:4px;">${esc(secName[id] || '')}</span>`).join('') || '<span class="muted">\u2014</span>'}</td>
       <td style="text-align:right; white-space:nowrap;"><button class="btn small" data-hide="${d.id}" data-to="${d.hidden ? 'false' : 'true'}">${d.hidden ? 'Unhide' : 'Hide'}</button>${isDeveloper() ? ` <button class="btn small danger" data-delete="${d.id}" data-name="${esc(d.medicine_name)}">Remove</button>` : ''}</td>
@@ -427,6 +441,37 @@ async function loadCatalogList() {
   const reload = () => { const cs = document.getElementById('cat-search'); const pos = cs.selectionStart; loadCatalogList().then(() => { const n = document.getElementById('cat-search'); n.focus(); n.setSelectionRange(pos, pos); }); };
   document.getElementById('cat-search').oninput = reload;
   document.getElementById('cat-class-filter').onchange = () => loadCatalogList();
+  el.querySelectorAll('.cat-sel').forEach(cb => cb.onchange = () => {
+    if (cb.checked) selectedDrugs.add(cb.dataset.id); else selectedDrugs.delete(cb.dataset.id);
+    loadCatalogList();
+  });
+  document.getElementById('cat-all').onchange = (e) => {
+    shown.forEach(x => { if (e.target.checked) selectedDrugs.add(x.id); else selectedDrugs.delete(x.id); });
+    loadCatalogList();
+  };
+  document.getElementById('cat-clear-sel').onclick = () => { selectedDrugs.clear(); loadCatalogList(); };
+  const tagSelected = async (value) => {
+    const ids = [...selectedDrugs];
+    if (!ids.length) return;
+    const { error: e } = await sb.from('drug_catalog').update({ restricted: value }).in('id', ids);
+    if (e) return toast(e.message, true);
+    ids.forEach(id => { const row = data.find(x => x.id === id); if (row) { if (value) restrictedDrugs.add(row.medicine_name); else restrictedDrugs.delete(row.medicine_name); } });
+    toast(value ? `${ids.length} drug${ids.length === 1 ? '' : 's'} tagged as restricted.` : `Restricted tag removed from ${ids.length} drug${ids.length === 1 ? '' : 's'}.`);
+    selectedDrugs.clear();
+    loadCatalogList();
+  };
+  document.getElementById('cat-tag-restricted').onclick = () => tagSelected(true);
+  document.getElementById('cat-untag-restricted').onclick = () => tagSelected(false);
+  const emergSelected = async (value) => {
+    const ids = [...selectedDrugs]; if (!ids.length) return;
+    const { error: e } = await sb.from('drug_catalog').update({ emergency_stock: value }).in('id', ids);
+    if (e) return toast(e.message, true);
+    ids.forEach(id => { const row = data.find(x => x.id === id); if (row) row.emergency_stock = value; });
+    toast(value ? `${ids.length} marked as emergency stock.` : `${ids.length} no longer marked as emergency stock.`);
+    render();
+  };
+  document.getElementById('cat-tag-emerg').onclick = () => emergSelected(true);
+  document.getElementById('cat-untag-emerg').onclick = () => emergSelected(false);
 
   el.querySelectorAll('[data-hide]').forEach(b => b.onclick = async () => {
     const { error: e } = await sb.rpc('set_drug_hidden', { p_id: b.dataset.hide, p_hidden: b.dataset.to === 'true' });

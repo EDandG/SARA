@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Logs</title>
+<title>StockFlow — Logs</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
-<script src="vendor/xlsx.full.min.js"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 </head>
 <body data-page="logs.html">
 <div id="app">
@@ -16,7 +16,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">Stock Req</div>
+        <div class="name">StockFlow</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -113,7 +113,7 @@ async function renderLogs() {
       filenamePart = `${siteName(scope).toLowerCase().replace(/[^a-z0-9]+/g, '-')}-logs`;
     }
     if (!rows.length) return toast('Nothing to export.', true);
-    exportRowsToExcel(rows, `stock-req-${filenamePart}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    exportRowsToExcel(rows, `stockflow-${filenamePart}-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   // Shared "are you really sure" step: type the word, re-enter the password, then call the RPC.
@@ -192,7 +192,7 @@ async function renderLogs() {
       ...(hist || []).map(h => ({ when: h.changed_at, kind: 'Stocklist change', who: nm[h.changed_by] || '', detail: `${h.change_type}: ${h.medicine_name} ${h.old_value ?? ''} \u2192 ${h.new_value ?? ''}`, ward: wardName(h.ward_id) })),
     ].sort((x, y) => String(y.when).localeCompare(String(x.when)));
     if (!rows.length) return toast('Nothing to export.', true);
-    exportRowsToExcel(rows, `stock-req-audit-log-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    exportRowsToExcel(rows, `stockflow-audit-log-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 }
 

@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Make a new stock request</title>
+<title>StockFlow — Make a new stock request</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="stylesheet" href="shared.css" />
 <style>
-  .cart-bar{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;align-items:center;justify-content:center;gap:16px;padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px));background:#1a2744;color:#fff;box-shadow:0 -6px 20px rgba(0,0,0,.18);font-weight:700;}
+  .cart-bar{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;align-items:center;justify-content:center;gap:16px;padding:12px 16px calc(12px + env(safe-area-inset-bottom,0px));background:#003087;color:#fff;box-shadow:0 -6px 20px rgba(0,0,0,.18);font-weight:700;}
   .cart-bar[hidden]{display:none;}
   .cart-bar button{min-width:150px;}
   .draft-note{display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;margin:12px auto 0;padding:10px 14px;max-width:520px;border:1px solid var(--border);border-radius:10px;font-size:13.5px;}
@@ -21,7 +21,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">Stock Req</div>
+        <div class="name">StockFlow</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -42,7 +42,7 @@
 <script src="shared.js"></script>
 <script>
 let cart = [], orderWardId = null, orderType = null;
-let topupLockHeldByMe = false, topupLockPollTimer = null, topupHeartbeatTimer = null;
+let topupLockHeldByMe = false, topupLockPollTimer = null, topupHeartbeatTimer = null, topupLockLost = false;
 
 // Whole-ward lock: acquired the moment a top-up cart gets its first
 // item, blocks every OTHER user of the ward from building either an
@@ -73,7 +73,14 @@ async function releaseTopupLock(ward) {
 }
 function startTopupHeartbeat(ward) {
   stopTopupHeartbeat();
-  topupHeartbeatTimer = setInterval(() => { sb.rpc('heartbeat_topup_lock', { target_ward: ward }); }, 5 * 60000);
+  topupLockLost = false;
+  topupHeartbeatTimer = setInterval(async () => {
+    const { data: stillMine, error } = await sb.rpc('heartbeat_topup_lock', { target_ward: ward });
+    if (!error && stillMine === false && !topupLockLost) {
+      topupLockLost = true;
+      toast('You no longer hold ordering for this ward (you may have been signed out, or someone else took over). This order can no longer be submitted from this screen \u2014 reload and start again.', true);
+    }
+  }, 5 * 60000);
 }
 
 // ---------- PREDICTIVE TOP-UP SUGGESTIONS ----------
@@ -551,8 +558,15 @@ async function renderOrderBuilder() {
         return;
       }
     }
+    if (topupLockLost) { toast('You no longer hold ordering for this ward. Reload the page and start again.', true); return; }
     const submitBtn = document.getElementById('cart-submit');
     submitBtn.disabled = true;
+    if (!topupLockHeldByMe) {
+      // a screen that never took the ward's lock (for example a restored draft) must take it now; the database refuses the save otherwise
+      const { data: got, error: lockErr2 } = await sb.rpc('acquire_topup_lock', { target_ward: orderWardId });
+      if (lockErr2 || !got) { toast(lockErr2 ? lockErr2.message : 'Another person is ordering for this ward right now.', true); submitBtn.disabled = false; return; }
+      topupLockHeldByMe = true; startTopupHeartbeat(orderWardId);
+    }
 
     const { data: session, error: sessErr } = await sb.from('order_sessions')
       .insert({ ward_id: orderWardId, submitted_by: profile.id, order_type: orderType }).select().single();

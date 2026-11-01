@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Above max stock waiting for approval</title>
+<title>StockFlow — Above max stock waiting for approval</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -15,7 +15,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">Stock Req</div>
+        <div class="name">StockFlow</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -37,20 +37,22 @@
 <script>
 async function renderApprovals() {
   const body = document.getElementById('body');
-  const { data, error } = await sb.from('orders').select('*').eq('status', 'pending_approval').order('created_at');
+  const { data: allHeld, error } = await sb.from('orders').select('*').eq('status', 'pending_approval').order('created_at');
   if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+  // each kind of hold needs its own permission (the database enforces this too)
+  const data = (allHeld || []).filter(o => o.pending_reason === 'restricted_reorder' ? canApproveRestricted() : canApproveOrders());
 
   const { data: users } = await sb.rpc('staff_display_names');
   const nameById = Object.fromEntries((users || []).map(u => [u.id, u.full_name]));
 
   body.innerHTML = `<div class="card">
     <h2>Above max stock waiting for approval</h2>
-    <p class="muted">Orders where a ward requested more than the stocklist's usual maximum. Approve as requested, or amend the quantity first.</p>
+    <p class="muted">Orders where a ward requested more than the stocklist's usual maximum, and restricted drugs ordered again within the reorder window. Approve as requested, or amend the quantity first.</p>
     ${!data?.length ? `<div class="empty">Nothing awaiting approval.</div>` : `
     <table><thead><tr><th>Ward</th><th>Medicine</th><th>Requested</th><th></th></tr></thead><tbody>
       ${data.map(o => `<tr id="appr-row-${o.id}">
         <td>${esc(wardName(o.ward_id))}</td>
-        <td>${esc(o.medicine_name)}${packTag(o)}${attribution('Requested by', nameById[o.ordered_by], o.created_at)}</td>
+        <td>${esc(o.medicine_name)}${packTag(o)}${o.pending_reason === 'restricted_reorder' ? ' <span class="capsule" style="margin-left:4px;">Restricted reorder</span>' : ' <span class="capsule" style="margin-left:4px;">Above max</span>'}${attribution('Requested by', nameById[o.ordered_by], o.created_at)}</td>
         <td>${o.quantity}</td>
         <td style="text-align:right; white-space:nowrap;">
           <input type="number" min="1" id="appr-qty-${o.id}" value="${o.quantity}" style="width:60px; text-align:center; border:1px solid var(--border); border-radius:6px; padding:4px 0; margin-right:8px;" />

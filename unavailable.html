@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="robots" content="noindex, nofollow" />
-<title>Stock Req — Temporarily unavailable</title>
+<title>StockFlow — Temporarily unavailable</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="stylesheet" href="shared.css" />
@@ -32,14 +32,14 @@ document.documentElement.setAttribute('data-motion',m?m:(matchMedia('(prefers-re
   <div class="sl-tri a"></div><div class="sl-tri b"></div><div class="sl-tri c"></div><div class="sl-tri d"></div><div class="sl-tri e"></div><div class="sl-tri f"></div>
   <div class="sl-orb o1"></div><div class="sl-orb o2"></div><div class="sl-orb o3"></div>
   <div class="sl-brand">
-    <div class="name">Stock Req</div>
+    <div class="name">StockFlow</div>
     <div class="sub">by ED&amp;G&trade;</div>
   </div>
   <div class="sl-tagline">Back shortly.</div>
 </div>
 <div class="sl-panel"><div class="sl-form">
   <div class="un-state" id="state" role="status" aria-live="polite"><i aria-hidden="true"></i><span id="state-text">Checking</span></div>
-  <h1 id="title">Stock Req is temporarily unavailable</h1>
+  <h1 id="title">StockFlow is temporarily unavailable</h1>
   <p class="lead" id="lead">We can't reach the service right now. This page checks again automatically and takes you back as soon as it is working.</p>
   <div class="un-note"><b>Need stock urgently?</b> Follow your ward's downtime procedure or contact your pharmacy team directly. An unsent adhoc order is kept on this device.</div>
   <button class="btn magenta" id="retry">Try again now</button>
@@ -72,7 +72,7 @@ async function check() {
   const ok = await reachable(); tries++; busy = false; retry.disabled = false;
   if (ok) {
     stateEl.classList.add('up'); stateText.textContent = 'Back online';
-    document.getElementById('title').textContent = 'Stock Req is back';
+    document.getElementById('title').textContent = 'StockFlow is back';
     document.getElementById('lead').textContent = 'Taking you back now…';
     setTimeout(() => { location.href = back; }, 1200); return;
   }

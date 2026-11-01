@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — Log in</title>
+<title>StockFlow — Log in</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -23,7 +23,7 @@
   <div class="sl-p" style="width:4px;height:4px;background:rgba(95,182,224,.55);left:66%;animation:slUp2 13s linear infinite;animation-delay:-6s"></div>
   <div class="sl-p" style="width:3px;height:3px;background:rgba(76,175,80,.6);left:88%;animation:slUp1 17s linear infinite;animation-delay:-2s"></div>
   <div class="sl-brand">
-    <div class="name">Stock Req</div>
+    <div class="name">StockFlow</div>
     <div class="sub">by ED&amp;G&trade;</div>
     <div class="sl-live" id="sl-live" role="status"><i aria-hidden="true"></i><span id="sl-live-text">Live</span></div>
   </div>
@@ -90,7 +90,7 @@ sb.auth.getSession().then(async ({ data }) => {
 
 
 // ---- Throttling: the server counts misses and refuses further guesses
-// (see record_login_failure / email_for_user_id). This only shows the wait.
+// (in the login edge function). This only shows the wait.
 let loginLockTimer = null;
 function loginLockout(secs, errEl) {
   const btn = document.querySelector('.sl-panel button.btn.magenta, button.btn.magenta');
@@ -110,12 +110,6 @@ function loginLockout(secs, errEl) {
   tick();
   loginLockTimer = setInterval(tick, 1000);
 }
-async function loginMiss(userId, errEl) {
-  let wait = 0;
-  try { const r = await sb.rpc('record_login_failure', { lookup_user_id: userId }); wait = Number(r.data) || 0; } catch (e) {}
-  if (wait > 0) loginLockout(wait, errEl);
-  else errEl.textContent = 'Incorrect User ID or passcode.';
-}
 
 window.doLogin = async function () {
   const userId = document.getElementById('login-userid').value.trim();
@@ -125,16 +119,21 @@ window.doLogin = async function () {
   if (!userId || !passcode) { errEl.textContent = 'Enter your User ID and passcode.'; return; }
 
   if (loginLockTimer) return;
-  try { const w = await sb.rpc('login_wait_seconds', { lookup_user_id: userId }); if (Number(w.data) > 0) { loginLockout(Number(w.data), errEl); return; } } catch (e) {}
-  const { data: email, error: lookupError } = await sb.rpc('email_for_user_id', { lookup_user_id: userId });
-  if (isOutageError(lookupError)) { goUnavailable(); return; }
-  if (lookupError || !email) { await loginMiss(userId, errEl); return; }
+  let out = null, res = null;
+  try {
+    res = await fetch(`${FN_BASE}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: SUPABASE_PUBLISHABLE_KEY }, body: JSON.stringify({ user_id: userId, password: passcode }) });
+    out = await res.json();
+  } catch (e) { goUnavailable(); return; }
+  if (res.status >= 500) { goUnavailable(); return; }
+  if (!res.ok || !out?.access_token) {
+    if (Number(out?.wait) > 0) loginLockout(Number(out.wait), errEl);
+    else errEl.textContent = 'Incorrect User ID or passcode.';
+    return;
+  }
+  const { error: sessErr } = await sb.auth.setSession({ access_token: out.access_token, refresh_token: out.refresh_token });
+  if (isOutageError(sessErr)) { goUnavailable(); return; }
+  if (sessErr) { errEl.textContent = 'Incorrect User ID or passcode.'; return; }
 
-  const { error: signInError } = await sb.auth.signInWithPassword({ email, password: passcode });
-  if (isOutageError(signInError)) { goUnavailable(); return; }
-  if (signInError) { await loginMiss(userId, errEl); return; }
-
-  try { await sb.rpc('clear_login_failures'); } catch (e) {}
   const { data: { user } } = await sb.auth.getUser();
   const { data: p } = await sb.from('profiles').select('*').eq('id', user.id).single();
   if (!p || !p.active) { errEl.textContent = 'This account is inactive. Contact an administrator.'; await sb.auth.signOut(); return; }

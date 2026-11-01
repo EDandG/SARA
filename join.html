@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="referrer" content="no-referrer" />
-<title>Create your account — Stock Req</title>
+<title>Create your account — StockFlow</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -30,7 +30,7 @@
   <div class="join-wrap">
     <div class="join-brand">
       <img id="join-logo" alt="" />
-      <div class="name">Stock Req</div>
+      <div class="name">StockFlow</div>
       <div class="sub">by ED&amp;G&trade;</div>
     </div>
 
@@ -120,7 +120,7 @@ sb.from('system_settings').select('value').eq('key', 'login_logo_data_url').mayb
   }
   try {
     const r = await call({ action: 'lookup' });
-    document.getElementById('intro').textContent = `You've been invited to Stock Req as a ${r.role_label}. Enter your name and choose a password — your access has already been set up for you.`;
+    document.getElementById('intro').textContent = `You've been invited to StockFlow as a ${r.role_label}. Enter your name and choose a password — your access has already been set up for you.`;
     const wardsLine = r.ward_names && r.ward_names.length
       ? `<b>Wards:</b> ${r.ward_names.map(esc).join(', ')}`
       : `<b>Wards:</b> none assigned yet`;

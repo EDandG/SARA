@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Stock Req — System settings</title>
+<title>StockFlow — System settings</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
@@ -15,7 +15,7 @@
     <div class="brand">
       
       <div>
-        <div class="name">Stock Req</div>
+        <div class="name">StockFlow</div>
         <div class="sub" data-ward-context></div>
       </div>
     </div>
@@ -72,6 +72,14 @@ async function renderSystemSettings() {
       <input type="number" min="1" id="dup-window" value="${systemSettings.duplicate_window_hours || '48'}" style="max-width:120px;" />
       <button class="btn magenta" style="margin-top:14px;" id="save-dup-window">Save duplicate window</button>
     </div>
+    ${isDeveloper() ? `<div class="card">
+      <h2>Restricted reordering</h2>
+      <p class="muted">Drugs tagged <b>Restricted</b> in the Drug catalogue. When this is <b>on</b>, a ward ordering the same restricted drug again within the window below is held until someone with <i>Approve restricted reordering</i> approves it. When it is <b>off</b>, nothing is held, whatever is tagged.</p>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:600;"><input type="checkbox" id="rr-on" style="width:auto;" ${systemSettings.restricted_reorder_enabled === 'true' ? 'checked' : ''} /> Restricted reordering is on</label>
+      <div style="margin-top:10px;"><label>Window (hours)</label>
+      <input type="number" min="1" id="rr-window" value="${systemSettings.reorder_approval_window_hours || '24'}" style="max-width:120px;" /></div>
+      <button class="btn magenta" style="margin-top:14px;" id="save-rr">Save restricted reordering</button>
+    </div>` : ''}
     <div class="card">
       <h2>Inactivity sign-out</h2>
       <p class="muted">Signs people out after this many minutes with no activity, with a one-minute warning. Unsent adhoc orders are kept on the device. Set 0 to turn it off.</p>
@@ -113,6 +121,18 @@ async function renderSystemSettings() {
       </div>
       <p class="muted" id="bk-status" style="margin-top:8px;">Loading\u2026</p>
     </div>` : ''}
+    ${isDeveloper() ? `<div class="card" id="digest-card">
+      <h2>Weekly digest by email</h2>
+      <p class="muted">Every Monday morning, emails a short summary of the week: requests, fill rate, turnaround, items out of stock, temp stock asked for and wards well off their usual pattern. Counts and names only \u2014 no patient information. Developer only.</p>
+      <label style="display:flex; align-items:center; gap:8px; font-weight:400;"><input type="checkbox" id="dg-enabled" style="width:auto;" />Send the digest every Monday</label>
+      <div style="margin-top:10px;"><label for="dg-recipients">Send to (up to 5 email addresses, separated by commas)</label>
+        <input id="dg-recipients" placeholder="name@example.com, name2@example.com" /></div>
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn small" id="dg-save">Save</button>
+        <button class="btn ghost small" id="dg-now">Send a digest now</button>
+      </div>
+      <p class="muted" id="dg-status" style="margin-top:8px;">Loading\u2026</p>
+    </div>` : ''}
     <div class="card">
       <h2>Second-person picking check</h2>
       <p class="muted">When on, a picked request must be checked by a different person (someone with the check permission) before it counts as complete. When off, a request is complete as soon as the picker confirms it, and the record shows the check was not required. Only the Developer can set this.</p>
@@ -141,7 +161,7 @@ async function renderSystemSettings() {
     </div>
     ${isDeveloper() ? `<div class="card">
       <h2>Login screen logo</h2>
-      <p class="muted">Shown above the Stock Req title on the sign-in page. Developer only. Upload a small image (SVG, PNG or JPG, under 1MB).</p>
+      <p class="muted">Shown above the StockFlow title on the sign-in page. Developer only. Upload a small image (SVG, PNG or JPG, under 1MB).</p>
       ${systemSettings.login_logo_data_url ? `<img src="${systemSettings.login_logo_data_url}" alt="Current login logo" style="max-height:90px; max-width:260px; display:block; margin-bottom:10px; border:1px solid var(--border); border-radius:6px; padding:6px;" />` : `<p class="muted" style="font-size:11.5px;">No login logo set yet.</p>`}
       <input type="file" id="login-logo-input" accept="image/png,image/jpeg,image/svg+xml,.svg" class="hidden" />
       <button class="btn ghost small" id="login-logo-choose-btn">Choose image\u2026</button>
@@ -151,7 +171,7 @@ async function renderSystemSettings() {
   applySubtabs(body, [
     { id: 'processing', label: 'Processing & timing', heads: ['Processing cutoff', 'Top-up countdown', 'Inactivity', 'Duplicate-order', 'Order history', 'Overdue top-up'] },
     { id: 'checks', label: 'Picking check', heads: ['Second-person'] },
-    { id: 'backup', label: 'Backups', heads: ['Stocklist backup'] },
+    { id: 'backup', label: 'Backups', heads: ['Stocklist backup', 'Weekly digest'] },
     { id: 'branding', label: 'Logos & branding', heads: ['Trust logo', 'Login screen logo'] },
     { id: 'features', label: 'Paid features', heads: ['Paid features'] },
   ]);
@@ -175,6 +195,20 @@ async function renderSystemSettings() {
     if (error) return toast(error.message, true);
     systemSettings.duplicate_window_hours = String(hours);
     toast('Duplicate-order window updated.');
+  };
+
+  const saveRr = document.getElementById('save-rr');
+  if (saveRr) saveRr.onclick = async () => {
+    const on = document.getElementById('rr-on').checked;
+    const hours = parseInt(document.getElementById('rr-window').value, 10);
+    if (!hours || hours < 1) return toast('Enter a window of at least 1 hour.', true);
+    const { error } = await sb.from('system_settings').upsert([
+      { key: 'restricted_reorder_enabled', value: String(on) },
+      { key: 'reorder_approval_window_hours', value: String(hours) }], { onConflict: 'key' });
+    if (error) return toast(error.message, true);
+    systemSettings.restricted_reorder_enabled = String(on);
+    systemSettings.reorder_approval_window_hours = String(hours);
+    toast(on ? 'Restricted reordering is ON.' : 'Restricted reordering is OFF.');
   };
 
   document.getElementById('save-idle').onclick = async () => {
@@ -253,6 +287,41 @@ async function renderSystemSettings() {
       btn.disabled = false; btn.textContent = 'Send a backup now'; showBk();
     };
     showBk();
+  }
+
+  // ---- weekly digest (Developer only) ----
+  if (document.getElementById('digest-card')) {
+    const showDg = async () => {
+      const { data: c, error } = await sb.from('digest_config').select('*').eq('id', 1).single();
+      const st = document.getElementById('dg-status');
+      if (error || !c) { st.textContent = 'Could not load digest settings \u2014 has the latest schema.sql been run?'; return; }
+      document.getElementById('dg-enabled').checked = !!c.enabled;
+      document.getElementById('dg-recipients').value = (c.recipients || []).join(', ');
+      st.textContent = `${c.last_sent_at ? 'Last digest sent ' + fmtDate(c.last_sent_at) + '. ' : 'No digest sent yet. '}${c.last_status || ''}`;
+    };
+    document.getElementById('dg-save').onclick = async () => {
+      const list = document.getElementById('dg-recipients').value.split(/[\s,;]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
+      const bad = list.find(x => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
+      if (bad) return toast(`\u201c${bad}\u201d is not a valid email address.`, true);
+      if (list.length > 5) return toast('Up to 5 recipients.', true);
+      const enabled = document.getElementById('dg-enabled').checked;
+      if (enabled && !list.length) return toast('Add at least one recipient before switching the digest on.', true);
+      const { error } = await sb.from('digest_config').update({ enabled, recipients: [...new Set(list)] }).eq('id', 1);
+      if (error) return toast(error.message, true);
+      toast('Digest settings saved.'); showDg();
+    };
+    document.getElementById('dg-now').onclick = async () => {
+      const btn = document.getElementById('dg-now'); btn.disabled = true; btn.textContent = 'Sending\u2026';
+      try {
+        const { data: { session: ss } } = await sb.auth.getSession();
+        const res = await fetch(`${FN_BASE}/weekly-digest`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ss.access_token}` }, body: JSON.stringify({ force: true }) });
+        let out = {}; try { out = await res.json(); } catch (e) {}
+        if (!res.ok) throw new Error(out.error || 'Digest failed');
+        toast('Digest sent.');
+      } catch (e) { toast(e.message, true); }
+      btn.disabled = false; btn.textContent = 'Send a digest now'; showDg();
+    };
+    showDg();
   }
 
   document.getElementById('check-toggle').onchange = async (e) => {

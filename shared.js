@@ -1,5 +1,5 @@
 // ============================================================
-// Stock Req — shared.js
+// StockFlow — shared.js
 // Loaded via a classic <script> tag by every page, after the Supabase
 // UMD script. Deliberately NOT an ES module — `import` from a CDN can
 // hang silently on restrictive/corporate networks with no console
@@ -21,7 +21,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 // ---------- ACCESSIBILITY SETTINGS (colour modes + animation) ----------
 // Stored per device in localStorage. Colour only: no layout or text-size changes.
 const A11Y_MODES = [
-  ['default', 'Standard', 'The normal Stock Req colours', ['#f4f5f7', '#1a2744', '#0e7c86']],
+  ['default', 'Standard', 'The normal StockFlow colours', ['#f0f4f5', '#003087', '#005eb8']],
   ['bw', 'Black and white', 'Greyscale, no colour at all', ['#ffffff', '#000000', '#6b6b6b']],
   ['blue', 'Blue contrast', 'Pale blue background, deep blue text', ['#d6e6f8', '#00205b', '#005eb8']],
   ['beige', 'Beige contrast', 'Warm cream background, dark brown text', ['#f1e7cc', '#3a2f17', '#7a3e00']],
@@ -89,7 +89,7 @@ function openAccessibilitySettings() {
 const PERMISSION_DEFS = [
   { group: 'Ordering & processing', items: [
     ['can_order', 'Order stock'], ['can_process', 'Process stock'], ['can_check_picking', 'Check picked requests'],
-    ['can_approve_orders', 'Approve orders'], ['can_mark_nonurgent', 'Mark non-urgent'],
+    ['can_approve_orders', 'Approve orders (above max)'], ['can_approve_restricted', 'Approve restricted reordering'], ['can_mark_nonurgent', 'Mark non-urgent'],
     ['can_freetext_temp_stock', 'Temp stock (order any catalogue drug)'] ] },
   { group: 'People', items: [
     ['can_manage_users', 'Manage users (within their sites)'],
@@ -122,6 +122,7 @@ let wards = [];
 let myWards = [];
 let bankHolidays = [];
 let processingCutoffs = { weekday: '14:00', weekend_or_holiday: '14:00' };
+let restrictedDrugs = new Set(); // catalogue drugs tagged restricted
 let packSizes = {}; // medicine name -> pack size, from the drug catalog (loaded by requireAuth)
 let systemSettings = { topup_window_start: '00:01', topup_window_end: '17:00', duplicate_window_hours: '48', overdue_topup_preview_enabled: 'false', trust_logo_data_url: '', login_logo_data_url: '', order_history_days: '7', picking_check_required: 'true', no_check_label: 'Processed', feature_insights_enabled: 'false', feature_bi_enabled: 'false' };
 let notifyPollTimer = null;
@@ -163,6 +164,8 @@ function pickAuditLine(s, nameById) {
   return `${base} \u2014 awaiting an independent check`;
 }
 const canApproveOrders = () => isSuperuser() || !!profile?.can_approve_orders;
+const canApproveRestricted = () => isSuperuser() || !!profile?.can_approve_restricted;
+const restrictedReorderOn = () => systemSettings.restricted_reorder_enabled === 'true';
 const canMarkNonUrgent = () => isSuperuser() || !!profile?.can_mark_nonurgent;
 const canManageStocklists = () => isSuperuser() || !!profile?.can_manage_stocklists;
 const canManageWardsSites = () => isSuperuser() || !!profile?.can_manage_wards_sites;
@@ -318,6 +321,7 @@ function startIdleWatch() {
     const left = limit - (Date.now() - idleLast);
     if (left <= 0) {
       clearInterval(idleTimer);
+      try { await sb.rpc('release_own_workflows'); } catch (e) {}
       try { await sb.auth.signOut(); } catch (e) {}
       window.location.href = 'login.html?idle=1';
     } else if (left <= warnAt && !idleWarnOpen) {
@@ -841,7 +845,8 @@ async function requireAuth(options = {}) {
   (cutoffRows || []).forEach(r => { processingCutoffs[r.day_type] = r.cutoff_time?.slice(0, 5) || processingCutoffs[r.day_type]; });
   (settingRows || []).forEach(r => { systemSettings[r.key] = r.value; });
   try {
-    const { data: packRows } = await sb.from('drug_catalog').select('medicine_name, pack_size');
+    const { data: packRows } = await sb.from('drug_catalog').select('medicine_name, pack_size, restricted');
+    restrictedDrugs = new Set((packRows || []).filter(r => r.restricted).map(r => r.medicine_name));
     packSizes = Object.fromEntries((packRows || []).filter(r => r.pack_size).map(r => [r.medicine_name, r.pack_size]));
   } catch (e) { /* pack sizes are display-only; carry on without */ }
 
@@ -890,6 +895,7 @@ function wireLogout() {
     if (notifyPollTimer) { clearInterval(notifyPollTimer); notifyPollTimer = null; }
     if (sessionHeartbeatTimer) { clearInterval(sessionHeartbeatTimer); sessionHeartbeatTimer = null; }
     if (profile) {
+      try { await sb.rpc('release_own_workflows'); } catch (e) {}
       await sb.from('login_events').insert({ user_id: profile.id, event_type: 'logout' });
       // No client-callable session-clearing RPC — active_sessions has
       // no client-writable delete path at all now. The heartbeat
@@ -924,6 +930,7 @@ function startSessionHeartbeat() {
     if (row?.revoked_at) {
       if (sessionHeartbeatTimer) clearInterval(sessionHeartbeatTimer);
       if (notifyPollTimer) clearInterval(notifyPollTimer);
+      try { await sb.rpc('release_own_workflows'); } catch (e) {}
       await sb.auth.signOut();
       window.location.href = 'login.html?ended=1';
       return;
@@ -1013,7 +1020,7 @@ function startNewOrderPolling() {
     // does NOT check document.hidden — the whole point is to reach
     // someone who isn't currently looking at the tab.
     if (!document.hidden) toast(msg);
-    pushNotify('Stock Req', msg);
+    pushNotify('StockFlow', msg);
   }, 45000);
 }
 
@@ -1031,7 +1038,7 @@ function buildNavLinks() {
     links.push({ href: 'processed-history.html', label: 'Processed (48h)', group: 'Process awaiting orders' });
     if (canCheckPicking() && pickingCheckRequired()) links.push({ href: 'sessions.html#awaiting-check', label: 'Complete final check', group: 'Complete final check' });
   }
-  if (canApproveOrders()) {
+  if (canApproveOrders() || canApproveRestricted()) {
     links.push({ href: 'approvals.html', label: 'Above max stock waiting for approval', group: 'Above max stock waiting for approval' });
   }
   // Each Admin link is its own permission (the Developer holds them all).
@@ -1052,6 +1059,7 @@ function buildNavLinks() {
   if (canViewBi() && biEnabled()) {
     links.push({ href: 'bi-analytics.html', label: 'Analytics', group: 'ED&G™ Business Intelligence Suite' });
     links.push({ href: 'bi-insights.html', label: 'Item usage', group: 'ED&G™ Business Intelligence Suite' });
+    links.push({ href: 'bi-operations.html', label: 'Operations', group: 'ED&G™ Business Intelligence Suite' });
     links.push({ href: 'bi-predictive.html', label: 'Predictive top-up', group: 'ED&G™ Business Intelligence Suite' });
   }
   if (canSeeAudit()) links.push({ href: 'audit.html', label: 'Audit', group: 'Governance' });
@@ -1083,7 +1091,7 @@ const UI_ICON_PATHS = {
   trend:     '<path d="M3 20h18"/><path d="M5 16l4-5 4 3 6-8"/><circle cx="19" cy="6" r="1.6"/>',
   pie:       '<path d="M12 3v9h9"/><path d="M20.5 15A9 9 0 1 1 9 3.5"/>',
   sparkle:   '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 2 2 .7-2 .7L19 21l-.7-1.6-2-.7 2-.7z"/>',
-  hospital:  '<path d="M4 21V6l8-3 8 3v15"/><path d="M2 21h20"/><path d="M12 8v6M9 11h6"/><path d="M10 21v-4h4v4"/>',
+  hospital:  '<path d="M3 21V10h8v11"/><path d="M2 21h20"/><path d="M6 14h2M6 17h2"/><path d="M17 2.8a4.2 4.2 0 0 1 4.2 4.2c0 3.2-4.2 7.4-4.2 7.4S12.8 10.2 12.8 7A4.2 4.2 0 0 1 17 2.8z"/><circle cx="17" cy="7" r="1.4"/>',
   bed:       '<path d="M3 18V7M3 14h18v4M21 14v-2a3 3 0 0 0-3-3h-7v5"/><circle cx="7" cy="11" r="1.6"/>',
   users:     '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><circle cx="17" cy="9" r="2.4"/><path d="M17 14c2.5 0 4.5 2 4.5 4.5"/>',
   tag:       '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.3"/>',
@@ -1103,13 +1111,18 @@ const UI_ICON_PATHS = {
   warn:      '<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.4v.1"/>',
   x:         '<path d="M6 6l12 12M18 6L6 18"/>',
 };
+// Duotone: the first closed shape of these icons takes a soft teal tint.
+const DUO_ICONS = ['tag', 'pill', 'clipboard', 'calendar', 'calclock', 'scroll', 'box'];
 function uiIcon(name, size = 18) {
-  return `<svg class="ui-ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${UI_ICON_PATHS[name] || ''}</svg>`;
+  let body = UI_ICON_PATHS[name] || '';
+  if (DUO_ICONS.includes(name)) body = body.replace(/<(path|rect)/, '<$1 class="f"');
+  return `<svg class="ui-ic" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 }
 
 const PAGE_META = {
   'insights.html': ['insights', 'Insights', 'Orders due today and how many have been processed.'],
   'bi-analytics.html': ['trend', 'ED&G™ Business Intelligence Suite', 'Volumes, turnaround, breaches, trends and top-up compliance.'],
+  'bi-operations.html': ['pie', 'ED&G™ Business Intelligence Suite', 'Fill rate, turnaround, cut-offs, right-sizing, dead stock and alerts.'],
   'bi-insights.html': ['pie', 'ED&G™ Business Intelligence Suite', 'Most-ordered items, seasonal patterns and who is ordering what.'],
   'bi-predictive.html': ['sparkle', 'ED&G™ Business Intelligence Suite', 'What each ward is offered by predictive top-up.'],
   'sites.html': ['hospital', 'Sites', 'Hospital sites that wards belong to.'],
@@ -1151,7 +1164,7 @@ function buildSideNav() {
   const nav = document.createElement('nav');
   nav.id = 'sideNav'; nav.className = 'side-nav'; nav.setAttribute('aria-label', 'Main navigation');
   nav.innerHTML =
-    `<div class="sn-brand">Stock Req<small>by ED&amp;G™</small></div>` +
+    `<div class="sn-brand">StockFlow<small>by ED&amp;G™</small></div>` +
     `<a href="home.html" class="sn-home"${currentHref === 'home.html' ? ' aria-current="page"' : ''}>${homeIcon}<span>Home</span></a>` +
     groups.map(g => `<hr><div class="sn-group">${iconFor[g] || ''}<span>${esc(labelFor[g] || g)}</span></div>` +
       links.filter(l => l.group === g).map(l => `<a class="sn-sub" href="${l.href}"${l.href === currentHref ? ' aria-current="page"' : ''}><span>${esc(l.label)}</span></a>`).join('')).join('');

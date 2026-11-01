@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>StockFlow — ED&G™ Business Intelligence Suite</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body data-page="bi-operations.html">
+<div id="app">
+<header class="topbar">
+    <div class="brand">
+      
+      <div>
+        <div class="name">StockFlow</div>
+        <div class="sub" data-ward-context></div>
+      </div>
+    </div>
+    <div class="who">
+      <span data-who-name></span>
+      <button class="logout" data-logout>Log out</button>
+    </div>
+  </header>
+  <div id="banner-root"></div>
+  <div id="page-nav" class="tabs"></div>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<script src="vendor/chart.umd.min.js"></script>
+<script src="vendor/supabase.js"></script>
+<script src="shared.js"></script>
+<script>
+// ED&G™ Business Intelligence Suite — Operations
+// Everything here is computed in the browser from the orders already recorded.
+// No new data entry is needed.
+const NHS = { blue: '#005eb8', dark: '#003087', light: '#41b6e6', green: '#007f3b', amber: '#ed8b00', red: '#d5281b', grey: '#768692' };
+let D = null;            // loaded data
+let charts = {};
+const csvStore = {};
+
+// ---------- helpers ----------
+const pct = (n, d) => d ? Math.round((n / d) * 1000) / 10 : null;
+const pctTxt = (v) => v === null ? '—' : v + '%';
+const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const quant = (a, q) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.ceil(q * s.length) - 1)]; };
+const mean = (a) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
+const sd = (a) => { if (a.length < 2) return 0; const m = mean(a); return Math.sqrt(mean(a.map(x => (x - m) ** 2))); };
+const mins = (a, b) => (a && b) ? (new Date(b) - new Date(a)) / 60000 : null;
+function dur(m) { if (m === null || m === undefined) return '—'; if (m < 60) return Math.round(m) + ' min'; if (m < 1440) return (Math.round(m / 6) / 10) + ' h'; return (Math.round(m / 144) / 10) + ' d'; }
+const num = (v) => v === null || v === undefined ? '—' : v;
+const isTemp = (n) => /^\[Temp stock\] /.test(n || '');
+const stripTemp = (n) => String(n || '').replace(/^\[Temp stock\] /, '');
+function tile(label, value, sub, colour) {
+  return `<div class="card" style="flex:1; min-width:150px; box-shadow:none; border:1px solid var(--border-soft); text-align:center;">
+    <div class="muted" style="font-size:11px; text-transform:uppercase; letter-spacing:.04em;">${esc(label)}</div>
+    <div style="font-size:24px; font-weight:700; color:${colour || 'var(--navy)'}; margin-top:4px;">${value}</div>
+    ${sub ? `<div class="muted" style="font-size:11.5px; margin-top:2px;">${sub}</div>` : ''}</div>`;
+}
+function table(id, headers, rows, opts = {}) {
+  csvStore[id] = { headers, rows: rows.map(r => r.map(c => (typeof c === 'object' && c !== null && 'v' in c) ? c.v : String(c).replace(/<[^>]+>/g, ''))), file: opts.file || id };
+  if (!rows.length) return `<div class="empty">${esc(opts.empty || 'Nothing to show for this period.')}</div>`;
+  const shown = rows.slice(0, opts.limit || 200);
+  return `<div style="overflow-x:auto;"><table><thead><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>
+    ${shown.map(r => `<tr>${r.map(c => `<td>${(typeof c === 'object' && c !== null && 'h' in c) ? c.h : c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    ${rows.length > shown.length ? `<p class="muted" style="font-size:12px;">Showing the first ${shown.length} of ${rows.length}. Export for the full list.</p>` : ''}
+    <button class="btn small ghost" data-csv="${id}" style="margin-top:8px;">Export CSV</button>`;
+}
+function wireCsv(root) {
+  root.querySelectorAll('[data-csv]').forEach(b => b.onclick = () => {
+    const t = csvStore[b.dataset.csv]; if (!t) return;
+    const q = (v) => { v = String(v ?? ''); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    const csv = [t.headers, ...t.rows].map(r => r.map(q).join(',')).join('\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(['﻿' + csv], { type: 'text/csv' }));
+    a.download = `stockflow-${t.file}-${isoDate(new Date())}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
+}
+function chart(id, cfg) { charts[id]?.destroy(); const el = document.getElementById(id); if (el) charts[id] = new Chart(el, cfg); }
+async function fetchAll(q) {
+  const out = []; const size = 1000;
+  for (let from = 0; ; from += size) {
+    const { data, error } = await q().range(from, from + size - 1);
+    if (error) throw error;
+    out.push(...(data || []));
+    if (!data || data.length < size) break;
+  }
+  return out;
+}
+
+// ---------- data ----------
+async function loadData(days, siteId) {
+  const since = new Date(); since.setDate(since.getDate() - days); since.setHours(0, 0, 0, 0);
+  const iso = since.toISOString();
+  const [orders, sessions, blist, catalog, names] = await Promise.all([
+    fetchAll(() => sb.from('orders').select('id, ward_id, ordered_by, session_id, medicine_name, quantity, status, supplied_qty, parent_order_id, order_type, created_at, processed_at, approved_at, rejected_at, pending_reason, fulfilled_as_medicine_name, fulfilled_as_quantity').gte('created_at', iso).order('id')),
+    fetchAll(() => sb.from('order_sessions').select('id, ward_id, submitted_by, order_type, created_at, picking_claimed_by, picking_claimed_at, picking_confirmed_by, picking_confirmed_at, checked_by, checked_at, check_waived').gte('created_at', iso).order('id')),
+    fetchAll(() => sb.from('blist_items').select('ward_id, medicine_name, min_qty, max_qty').order('id')),
+    fetchAll(() => sb.from('drug_catalog').select('id, medicine_name, emergency_stock, restricted, hidden').order('id')),
+    sb.rpc('staff_display_names').then(r => r.data || []),
+  ]);
+  // never count anything from before "Clear all app data"
+  let floor = since;
+  if (systemSettings.data_cleared_at) { const c = new Date(systemSettings.data_cleared_at + 'T00:00:00'); if (!isNaN(c) && c > floor) floor = c; }
+  const scopeWards = wards.filter(w => w.active !== false && (!siteId || w.site_id === siteId));
+  const inScope = new Set(scopeWards.map(w => w.id));
+  const keep = (r) => inScope.has(r.ward_id) && new Date(r.created_at) >= floor;
+  const o = orders.filter(keep), s = sessions.filter(keep);
+  const childByParent = {}; o.forEach(x => { if (x.parent_order_id) childByParent[x.parent_order_id] = x; });
+  const parents = o.filter(x => !x.parent_order_id);
+  return {
+    days, floor, scopeWards, inScope,
+    orders: o, sessions: s, parents, childByParent,
+    blist: blist.filter(b => inScope.has(b.ward_id)),
+    catalog, nameById: Object.fromEntries(names.map(n => [n.id, n.full_name])),
+    suppliedQty(p) {
+      if (p.status === 'complete') return p.quantity;
+      if (p.status === 'part_supplied') { const c = childByParent[p.id]; return (p.supplied_qty || 0) + (c && c.status === 'complete' ? c.quantity : 0); }
+      return 0;
+    },
+  };
+}
+const fillClass = (p) => p.status === 'complete' ? 'full' : p.status === 'part_supplied' ? 'part' : p.status === 'out_of_stock' ? 'none' : null;
+
+// ---------- 1. fill rate ----------
+function secFill() {
+  const rows = D.parents.filter(p => fillClass(p));
+  const cnt = { full: 0, part: 0, none: 0 }; rows.forEach(p => cnt[fillClass(p)]++);
+  const req = rows.reduce((a, p) => a + p.quantity, 0), sup = rows.reduce((a, p) => a + D.suppliedQty(p), 0);
+  const byWard = {}, byDrug = {};
+  rows.forEach(p => {
+    const w = byWard[p.ward_id] ??= { full: 0, part: 0, none: 0, req: 0, sup: 0 };
+    const d = byDrug[p.medicine_name] ??= { full: 0, part: 0, none: 0, req: 0, sup: 0, wards: new Set() };
+    [w, d].forEach(x => { x[fillClass(p)]++; x.req += p.quantity; x.sup += D.suppliedQty(p); });
+    if (fillClass(p) !== 'full') d.wards.add(p.ward_id);
+  });
+  const wardRows = Object.entries(byWard).map(([id, x]) => [wardName(id), x.full + x.part + x.none, x.full, x.part, x.none, pctTxt(pct(x.full, x.full + x.part + x.none)), pctTxt(pct(x.sup, x.req))])
+    .sort((a, b) => parseFloat(a[5]) - parseFloat(b[5]));
+  const drugRows = Object.entries(byDrug).filter(([, x]) => x.part + x.none > 0)
+    .sort((a, b) => (b[1].part + b[1].none) - (a[1].part + a[1].none)).slice(0, 25)
+    .map(([n, x]) => [stripTemp(n), x.full + x.part + x.none, x.part, x.none, pctTxt(pct(x.part + x.none, x.full + x.part + x.none)), x.wards.size, `${x.sup} of ${x.req}`]);
+  return `<div class="card"><h2>Fill rate and stock-outs</h2>
+    <p class="muted">Of the request lines that have been dealt with, how many were supplied in full, part supplied, or not supplied (out of stock). Lines still waiting are left out.</p>
+    <div class="row" style="gap:10px;">${tile('Lines dealt with', rows.length)}${tile('Supplied in full', pctTxt(pct(cnt.full, rows.length)), `${cnt.full} lines`, NHS.green)}${tile('Part supplied', pctTxt(pct(cnt.part, rows.length)), `${cnt.part} lines`, NHS.amber)}${tile('Not supplied', pctTxt(pct(cnt.none, rows.length)), `${cnt.none} lines`, NHS.red)}${tile('Packs supplied', pctTxt(pct(sup, req)), `${sup} of ${req}`)}</div>
+    <h3 style="margin:16px 0 6px;">By ward (lowest fill rate first)</h3>
+    ${table('fill-ward', ['Ward', 'Lines', 'Full', 'Part', 'None', 'Line fill rate', 'Pack fill rate'], wardRows, { file: 'fill-by-ward' })}
+    <h3 style="margin:16px 0 6px;">Most often out of stock or part supplied</h3>
+    ${table('fill-drug', ['Medicine', 'Lines', 'Part', 'None', 'Not in full', 'Wards affected', 'Packs supplied'], drugRows, { file: 'stock-outs', empty: 'No stock-outs in this period.' })}</div>`;
+}
+
+// ---------- 2. turnaround ----------
+function sessionStages(s) {
+  const wait = mins(s.created_at, s.picking_claimed_at), pick = mins(s.picking_claimed_at, s.picking_confirmed_at);
+  const check = (!s.check_waived && s.checked_at) ? mins(s.picking_confirmed_at, s.checked_at) : null;
+  const end = s.checked_at || s.picking_confirmed_at;
+  return { wait, pick, check, total: mins(s.created_at, end) };
+}
+function secTurn() {
+  const done = D.sessions.filter(s => s.picking_confirmed_at).map(s => ({ s, ...sessionStages(s) })).filter(x => x.total !== null && x.total >= 0);
+  const col = (k) => done.map(x => x[k]).filter(v => v !== null && v >= 0);
+  const byWard = {}; done.forEach(x => (byWard[x.s.ward_id] ??= []).push(x));
+  const wardRows = Object.entries(byWard).map(([id, a]) => [wardName(id), a.length, dur(median(a.map(x => x.wait).filter(v => v !== null))), dur(median(a.map(x => x.pick).filter(v => v !== null))), dur(median(a.map(x => x.check).filter(v => v !== null))), dur(median(a.map(x => x.total))), dur(quant(a.map(x => x.total), .9))]);
+  setTimeout(() => {
+    const ws = Object.entries(byWard);
+    chart('ch-turn', { type: 'bar', data: { labels: ws.map(([id]) => wardName(id)), datasets: [
+      { label: 'Waiting to start', backgroundColor: NHS.light, data: ws.map(([, a]) => Math.round(median(a.map(x => x.wait).filter(v => v !== null)) || 0)) },
+      { label: 'Picking', backgroundColor: NHS.blue, data: ws.map(([, a]) => Math.round(median(a.map(x => x.pick).filter(v => v !== null)) || 0)) },
+      { label: 'Checking', backgroundColor: NHS.dark, data: ws.map(([, a]) => Math.round(median(a.map(x => x.check).filter(v => v !== null)) || 0)) }] },
+      options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, title: { display: true, text: 'Median minutes' } } } } });
+  }, 0);
+  return `<div class="card"><h2>Turnaround by stage</h2>
+    <p class="muted">Where the time goes between a request being sent and it being finished: waiting for someone to start, picking, then the independent check (when the check is on).</p>
+    <div class="row" style="gap:10px;">${tile('Requests finished', done.length)}${tile('Median wait to start', dur(median(col('wait'))))}${tile('Median picking', dur(median(col('pick'))))}${tile('Median check', dur(median(col('check'))))}${tile('Median total', dur(median(col('total'))), '90th percentile ' + dur(quant(col('total'), .9)))}</div>
+    <canvas id="ch-turn" height="110" style="margin-top:14px;"></canvas>
+    <h3 style="margin:16px 0 6px;">By ward</h3>
+    ${table('turn-ward', ['Ward', 'Requests', 'Wait', 'Picking', 'Check', 'Median total', '90th percentile'], wardRows, { file: 'turnaround' })}</div>`;
+}
+
+// ---------- 3. cut-off ----------
+function dayType(d) { return (d.getDay() === 0 || d.getDay() === 6 || bankHolidays.includes(isoDate(d))) ? 'weekend_or_holiday' : 'weekday'; }
+function secCutoff() {
+  const stat = { weekday: { n: 0, before: 0, beforeSame: 0, after: 0, afterSame: 0 }, weekend_or_holiday: { n: 0, before: 0, beforeSame: 0, after: 0, afterSame: 0 } };
+  const byDow = Array.from({ length: 7 }, () => ({ n: 0, before: 0 }));
+  D.sessions.forEach(s => {
+    const d = new Date(s.created_at), t = dayType(d), x = stat[t];
+    const [hh, mm] = (processingCutoffs[t] || '14:00').split(':').map(Number);
+    const before = d.getHours() * 60 + d.getMinutes() <= hh * 60 + mm;
+    const sameDay = s.picking_confirmed_at && isoDate(new Date(s.picking_confirmed_at)) === isoDate(d);
+    x.n++; byDow[d.getDay()].n++;
+    if (before) { x.before++; byDow[d.getDay()].before++; if (sameDay) x.beforeSame++; } else { x.after++; if (sameDay) x.afterSame++; }
+  });
+  setTimeout(() => chart('ch-dow', { type: 'bar', data: { labels: WEEKDAY_NAMES.map(n => n.slice(0, 3)), datasets: [{ label: '% sent before the cut-off', backgroundColor: NHS.blue, data: byDow.map(x => pct(x.before, x.n) ?? 0) }] },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, max: 100, title: { display: true, text: '% of requests sent before the cut-off' } } } } }), 0);
+  const row = (label, t) => { const x = stat[t]; return [label, processingCutoffs[t] || '—', x.n, pctTxt(pct(x.before, x.n)), pctTxt(pct(x.beforeSame, x.before)), x.after, pctTxt(pct(x.afterSame, x.after))]; };
+  return `<div class="card"><h2>Cut-off performance</h2>
+    <p class="muted">How many requests are sent before the daily cut-off, and how many of those are finished the same day. Cut-off times are the ones set on System settings.</p>
+    ${table('cutoff', ['Day type', 'Cut-off', 'Requests', 'Sent before cut-off', 'Finished same day (before)', 'Sent after cut-off', 'Finished same day (after)'], [row('Weekday', 'weekday'), row('Weekend or bank holiday', 'weekend_or_holiday')], { file: 'cutoff' })}
+    <canvas id="ch-dow" height="90" style="margin-top:14px;"></canvas></div>`;
+}
+
+// ---------- 4. approvals ----------
+function secApprovals() {
+  const held = D.parents.filter(p => p.approved_at || p.rejected_at || p.status === 'pending_approval');
+  const kind = (p) => p.pending_reason === 'restricted_reorder' ? 'Restricted reorder' : 'Above max';
+  const k = { 'Above max': { n: 0, ok: 0, no: 0, t: [] }, 'Restricted reorder': { n: 0, ok: 0, no: 0, t: [] } };
+  held.forEach(p => { const x = k[kind(p)]; x.n++; if (p.approved_at) { x.ok++; x.t.push(mins(p.created_at, p.approved_at)); } else if (p.rejected_at) { x.no++; x.t.push(mins(p.created_at, p.rejected_at)); } });
+  const rowsK = Object.entries(k).map(([n, x]) => [n, x.n, x.ok, x.no, x.n ? pctTxt(pct(x.ok, x.ok + x.no)) : '—', dur(median(x.t.filter(v => v !== null && v >= 0)))]);
+  const g = {};
+  held.forEach(p => { const key = `${p.ward_id}|${p.medicine_name}|${kind(p)}`; const x = g[key] ??= { ward: wardName(p.ward_id), drug: stripTemp(p.medicine_name), kind: kind(p), n: 0, packs: 0 }; x.n++; x.packs += p.quantity; });
+  const rep = Object.values(g).sort((a, b) => b.n - a.n).slice(0, 30).map(x => [x.ward, x.drug, x.kind, x.n, x.packs, (x.kind === 'Above max' && x.n >= 3) ? 'Consider raising this max' : (x.kind === 'Restricted reorder' && x.n >= 3 ? 'Repeated reordering — review' : '')]);
+  return `<div class="card"><h2>Above-max and restricted approvals</h2>
+    <p class="muted">Requests held for approval, how they were decided and how long it took. Repeated above-max requests for the same item suggest the stocklist max is too low.</p>
+    ${table('appr-kind', ['Type', 'Held', 'Approved', 'Rejected', 'Approval rate', 'Median time to decide'], rowsK, { file: 'approvals-summary' })}
+    <h3 style="margin:16px 0 6px;">Items held most often</h3>
+    ${table('appr-items', ['Ward', 'Medicine', 'Type', 'Times held', 'Packs', 'Note'], rep, { file: 'approvals-items', empty: 'Nothing was held for approval in this period.' })}</div>`;
+}
+
+// ---------- 5. right-sizing ----------
+let rsFilter = 'all';
+function rightSize() {
+  const key = (w, n) => `${w}|${n}`;
+  const q = {}, held = {};
+  D.parents.forEach(p => {
+    if (isTemp(p.medicine_name)) return;
+    (q[key(p.ward_id, p.medicine_name)] ??= []).push(p.quantity);
+    if (p.pending_reason !== 'restricted_reorder' && (p.approved_at || p.rejected_at || p.status === 'pending_approval')) held[key(p.ward_id, p.medicine_name)] = (held[key(p.ward_id, p.medicine_name)] || 0) + 1;
+  });
+  return D.blist.map(b => {
+    const qs = q[key(b.ward_id, b.medicine_name)] || [];
+    const n = qs.length, top = qs.length ? Math.max(...qs) : 0, p90 = quant(qs, .9), hits = qs.filter(v => v >= b.max_qty).length, hc = held[key(b.ward_id, b.medicine_name)] || 0;
+    let status = 'Not enough data', suggest = null;
+    if (n >= 3) {
+      if (hits / n >= 0.3 || hc >= 2) { status = 'Under-stocked'; suggest = Math.ceil(Math.max(p90, b.max_qty) * 1.25); if (suggest <= b.max_qty) suggest = b.max_qty + 1; }
+      else if (b.max_qty >= 2 * top && top > 0) { status = 'Over-stocked'; suggest = Math.max(Math.ceil(Math.max(p90, top) * 1.25), b.min_qty || 1); if (suggest >= b.max_qty) suggest = null; }
+      else status = 'About right';
+    }
+    return { ward: wardName(b.ward_id), drug: b.medicine_name, min: b.min_qty, max: b.max_qty, n, top, p90, hc, status, suggest };
+  });
+}
+function secRight() {
+  const all = rightSize();
+  const cnt = (s) => all.filter(x => x.status === s).length;
+  const shown = all.filter(x => rsFilter === 'all' ? x.status !== 'Not enough data' && x.status !== 'About right' : x.status === rsFilter)
+    .sort((a, b) => a.ward.localeCompare(b.ward) || a.drug.localeCompare(b.drug));
+  const rows = shown.map(x => [x.ward, x.drug, num(x.min), x.max, x.n, x.top, num(x.p90), x.hc, { h: `<span class="capsule" style="${x.status === 'Under-stocked' ? 'background:#fde8e6;color:#8f1b11;' : ''}">${x.status}</span>`, v: x.status }, x.suggest === null ? '—' : x.suggest]);
+  return `<div class="card"><h2>Stocklist right-sizing</h2>
+    <p class="muted">Compares each ward's max with what it actually orders. <b>Over-stocked</b>: the max is at least double the biggest request in the period. <b>Under-stocked</b>: at least 30% of requests reach the max, or the item was held above max twice or more. Needs at least 3 requests to judge. Suggested maxes are a starting point for a pharmacist to review, not an instruction.</p>
+    <div class="row" style="gap:10px;">${tile('Over-stocked', cnt('Over-stocked'), 'max could come down', NHS.amber)}${tile('Under-stocked', cnt('Under-stocked'), 'max may be too low', NHS.red)}${tile('About right', cnt('About right'), '', NHS.green)}${tile('Not enough data', cnt('Not enough data'), 'fewer than 3 requests')}</div>
+    <div style="margin:12px 0;"><label>Show</label><select id="rs-filter" style="max-width:260px;">
+      ${[['all', 'Needs a look (over and under)'], ['Over-stocked', 'Over-stocked only'], ['Under-stocked', 'Under-stocked only'], ['About right', 'About right'], ['Not enough data', 'Not enough data']].map(([v, l]) => `<option value="${v}" ${rsFilter === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    ${table('rs', ['Ward', 'Medicine', 'Min', 'Max', 'Requests', 'Biggest request', '90th percentile', 'Held above max', 'Verdict', 'Suggested max'], rows, { file: 'right-sizing', empty: 'Nothing to review for this filter.' })}
+    <p class="muted" style="font-size:12px; margin-top:8px;">${canManageStocklists() ? 'Change a max on the Stocklists page.' : 'People with the Manage stocklists permission can change a max on the Stocklists page.'}</p></div>`;
+}
+
+// ---------- 6. dead stock ----------
+function secDead() {
+  const emergency = new Set(D.catalog.filter(c => c.emergency_stock).map(c => c.medicine_name));
+  const ordered = new Set(D.parents.map(p => `${p.ward_id}|${p.medicine_name}`));
+  const dead = D.blist.filter(b => !ordered.has(`${b.ward_id}|${b.medicine_name}`));
+  const live = dead.filter(b => !emergency.has(b.medicine_name));
+  const kept = dead.length - live.length;
+  const orderedAnywhere = new Set(D.parents.map(p => stripTemp(p.medicine_name)));
+  const onAnyList = new Set(D.blist.map(b => b.medicine_name));
+  const neverOrdered = D.catalog.filter(c => !c.hidden && !orderedAnywhere.has(c.medicine_name));
+  const rows = live.sort((a, b) => wardName(a.ward_id).localeCompare(wardName(b.ward_id)) || a.medicine_name.localeCompare(b.medicine_name))
+    .map(b => [wardName(b.ward_id), b.medicine_name, num(b.min_qty), b.max_qty, canManageCatalogue() ? { h: `<button class="btn small ghost" data-emerg="${esc(b.medicine_name)}">Keep — emergency stock</button>`, v: '' } : '']);
+  const rows2 = neverOrdered.sort((a, b) => a.medicine_name.localeCompare(b.medicine_name)).map(c => [c.medicine_name, onAnyList.has(c.medicine_name) ? 'Yes' : 'No', c.emergency_stock ? 'Emergency stock' : '']);
+  return `<div class="card"><h2>Dead stock</h2>
+    <p class="muted">Items on a ward stocklist that nobody has ordered in the last ${D.days} days (the period chosen above). Items marked <b>emergency stock</b> in the catalogue, such as antidotes and anaphylaxis kits, are left out because they are meant to sit unused.</p>
+    <div class="row" style="gap:10px;">${tile('Unused stocklist lines', live.length, `${D.blist.length} lines in scope`, NHS.amber)}${tile('Left out as emergency stock', kept)}${tile('Catalogue drugs never ordered', neverOrdered.length)}</div>
+    <h3 style="margin:16px 0 6px;">Unused on a ward stocklist</h3>
+    ${table('dead', ['Ward', 'Medicine', 'Min', 'Max', ''], rows, { file: 'dead-stock', empty: 'Every stocklist line was ordered in this period.' })}
+    <h3 style="margin:16px 0 6px;">In the catalogue but not ordered by any ward</h3>
+    ${table('dead2', ['Medicine', 'On a stocklist', 'Note'], rows2, { file: 'catalogue-never-ordered', empty: 'Every catalogue drug was ordered at least once.' })}</div>`;
+}
+
+// ---------- 7. substitutions ----------
+function secSubs() {
+  const subs = D.parents.filter(p => p.fulfilled_as_medicine_name);
+  const pairs = {}; subs.forEach(p => { const k = `${p.medicine_name}→${p.fulfilled_as_medicine_name}`; const x = pairs[k] ??= { from: p.medicine_name, to: p.fulfilled_as_medicine_name, n: 0, packs: 0, wards: new Set() }; x.n++; x.packs += p.fulfilled_as_quantity || 0; x.wards.add(p.ward_id); });
+  const rows = Object.values(pairs).sort((a, b) => b.n - a.n).map(x => [stripTemp(x.from), x.to, x.n, x.packs, x.wards.size]);
+  const byWard = {}; subs.forEach(p => byWard[p.ward_id] = (byWard[p.ward_id] || 0) + 1);
+  const total = D.parents.filter(p => fillClass(p)).length;
+  const wr = Object.entries(byWard).sort((a, b) => b[1] - a[1]).map(([id, n]) => [wardName(id), n]);
+  return `<div class="card"><h2>Substitutions</h2>
+    <p class="muted">Lines where a different medicine was sent instead of the one requested.</p>
+    <div class="row" style="gap:10px;">${tile('Substituted lines', subs.length, pctTxt(pct(subs.length, total)) + ' of lines dealt with')}${tile('Different pairings', rows.length)}</div>
+    <h3 style="margin:16px 0 6px;">What replaced what</h3>${table('subs', ['Requested', 'Sent instead', 'Times', 'Packs sent', 'Wards'], rows, { file: 'substitutions', empty: 'No substitutions in this period.' })}
+    <h3 style="margin:16px 0 6px;">By ward</h3>${table('subs-ward', ['Ward', 'Substituted lines'], wr, { file: 'substitutions-by-ward', empty: 'No substitutions in this period.' })}</div>`;
+}
+
+// ---------- 8. temp stock ----------
+function secTemp() {
+  const t = D.parents.filter(p => isTemp(p.medicine_name));
+  const g = {}; t.forEach(p => { const n = stripTemp(p.medicine_name); const x = g[n] ??= { n, times: 0, packs: 0, wards: new Set(), last: p.created_at }; x.times++; x.packs += p.quantity; x.wards.add(p.ward_id); if (p.created_at > x.last) x.last = p.created_at; });
+  const cat = new Set(D.catalog.map(c => c.medicine_name)), lists = new Set(D.blist.map(b => b.medicine_name));
+  const rows = Object.values(g).sort((a, b) => b.times - a.times).map(x => [x.n, x.times, x.packs, [...x.wards].map(wardName).join(', '), fmtDate(x.last), cat.has(x.n) ? 'Yes' : 'No', x.times >= 2 ? (lists.has(x.n) ? 'Already on a stocklist elsewhere' : 'Consider adding to a stocklist') : '']);
+  return `<div class="card"><h2>Temp stock requests</h2>
+    <p class="muted">Free-text requests for medicines that are not on the ward's stocklist. Ones asked for repeatedly may belong on a stocklist.</p>
+    <div class="row" style="gap:10px;">${tile('Temp stock lines', t.length)}${tile('Different medicines', rows.length)}${tile('Asked for more than once', rows.filter(r => r[1] >= 2).length, '', NHS.amber)}</div>
+    ${table('temp', ['Medicine', 'Times', 'Packs', 'Wards', 'Last asked', 'In catalogue', 'Suggestion'], rows, { file: 'temp-stock', empty: 'No temp stock requests in this period.' })}</div>`;
+}
+
+// ---------- 9. staff workload (Developer only) ----------
+let anon = false;
+function secStaff() {
+  const nm = (id, i) => anon ? `Staff ${i + 1}` : (D.nameById[id] || '—');
+  const linesBySession = {}; D.parents.forEach(p => linesBySession[p.session_id] = (linesBySession[p.session_id] || 0) + 1);
+  const st = {};
+  D.sessions.forEach(s => {
+    if (s.picking_confirmed_by && s.picking_confirmed_at) { const x = st[s.picking_confirmed_by] ??= { picks: 0, lines: 0, t: [], checks: 0, clines: 0 }; x.picks++; x.lines += linesBySession[s.id] || 0; const m = mins(s.picking_claimed_at, s.picking_confirmed_at); if (m !== null && m >= 0) x.t.push(m); }
+    if (s.checked_by && s.checked_at && !s.check_waived) { const x = st[s.checked_by] ??= { picks: 0, lines: 0, t: [], checks: 0, clines: 0 }; x.checks++; x.clines += linesBySession[s.id] || 0; }
+  });
+  const rows = Object.entries(st).sort((a, b) => (b[1].lines + b[1].clines) - (a[1].lines + a[1].clines)).map(([id, x], i) => [nm(id, i), x.picks, x.lines, dur(median(x.t)), x.checks, x.clines]);
+  return `<div class="card"><h2>Staff workload</h2>
+    <p class="muted">Requests and lines each person picked and checked. This is a workload view to help plan cover, not a performance measure, and only the Developer can see it.</p>
+    <label style="display:flex; align-items:center; gap:6px; font-weight:400; margin-bottom:10px;"><input type="checkbox" id="staff-anon" style="width:auto;" ${anon ? 'checked' : ''}> Hide names</label>
+    ${table('staff', ['Person', 'Requests picked', 'Lines picked', 'Median pick time', 'Requests checked', 'Lines checked'], rows, { file: 'staff-workload', empty: 'No picking or checking recorded in this period.' })}</div>`;
+}
+
+// ---------- 10. ward league ----------
+let leagueSort = 'lines';
+function secLeague() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const rows = D.scopeWards.map(w => {
+    const ss = D.sessions.filter(s => s.ward_id === w.id), ps = D.parents.filter(p => p.ward_id === w.id);
+    const adhoc = ps.filter(p => p.order_type === 'adhoc').length;
+    const fc = ps.filter(p => fillClass(p)), full = fc.filter(p => fillClass(p) === 'full').length;
+    const tot = ss.filter(s => s.picking_confirmed_at).map(s => sessionStages(s).total).filter(v => v !== null && v >= 0);
+    // top-up compliance: due dates in the period that had a top-up request
+    let due = 0, hit = 0;
+    if (w.topup_days?.length) {
+      const have = new Set(ss.filter(s => s.order_type === 'topup').map(s => isoDate(new Date(s.created_at))));
+      const c = new Date(D.floor); c.setHours(0, 0, 0, 0);
+      while (c < today) { if (w.topup_days.includes(WEEKDAY_NAMES[c.getDay()])) { due++; if (have.has(isoDate(c))) hit++; } c.setDate(c.getDate() + 1); }
+    }
+    return { name: w.name, requests: ss.length, lines: ps.length, packs: ps.reduce((a, p) => a + p.quantity, 0), adhoc: pct(adhoc, ps.length), fill: pct(full, fc.length), turn: median(tot), comp: pct(hit, due), due };
+  });
+  const keyf = { lines: (a, b) => b.lines - a.lines, adhoc: (a, b) => (b.adhoc ?? -1) - (a.adhoc ?? -1), fill: (a, b) => (a.fill ?? 101) - (b.fill ?? 101), comp: (a, b) => (a.comp ?? 101) - (b.comp ?? 101), turn: (a, b) => (b.turn ?? -1) - (a.turn ?? -1) }[leagueSort];
+  rows.sort(keyf);
+  return `<div class="card"><h2>Ward league</h2>
+    <p class="muted">Every ward side by side. Adhoc share is the proportion of lines that were adhoc rather than top-up. Top-up compliance is the share of due top-up days that had a request.</p>
+    <div style="margin-bottom:10px;"><label>Sort by</label><select id="lg-sort" style="max-width:260px;">${[['lines', 'Most lines'], ['adhoc', 'Highest adhoc share'], ['fill', 'Lowest fill rate'], ['comp', 'Lowest top-up compliance'], ['turn', 'Slowest turnaround']].map(([v, l]) => `<option value="${v}" ${leagueSort === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    ${table('league', ['Ward', 'Requests', 'Lines', 'Packs', 'Adhoc share', 'Fill rate', 'Median turnaround', 'Top-up compliance', 'Top-ups due'], rows.map(r => [r.name, r.requests, r.lines, r.packs, pctTxt(r.adhoc), pctTxt(r.fill), dur(r.turn), pctTxt(r.comp), r.due]), { file: 'ward-league' })}</div>`;
+}
+
+// ---------- 11. alerts ----------
+function weekStart(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }
+function secAlerts() {
+  const thisWeek = weekStart(new Date());
+  const lastWeek = new Date(thisWeek); lastWeek.setDate(lastWeek.getDate() - 7);
+  const wk = (d) => Math.round((weekStart(d) - lastWeek) / 604800000);   // 0 = last full week, negative = earlier
+  const perWard = {}, perDrug = {};
+  D.parents.forEach(p => {
+    const w = wk(new Date(p.created_at));
+    if (w > 0) return;
+    (perWard[p.ward_id] ??= {})[w] = ((perWard[p.ward_id] ??= {})[w] || 0) + 1;
+    const k = `${p.ward_id}|${stripTemp(p.medicine_name)}`;
+    (perDrug[k] ??= {})[w] = ((perDrug[k] ??= {})[w] || 0) + p.quantity;
+  });
+  const firstWk = Math.min(0, ...D.parents.map(p => wk(new Date(p.created_at))));
+  const base = [];  for (let i = -1; i >= Math.max(firstWk, -12); i--) base.push(i);
+  const ok = base.length >= 4;
+  const alerts = [];
+  if (ok) {
+    Object.entries(perWard).forEach(([id, m]) => {
+      const hist = base.map(i => m[i] || 0), cur = m[0] || 0, mu = mean(hist), s = sd(hist);
+      if (cur >= 10 && cur > mu + 2 * Math.max(s, 1)) alerts.push([wardName(id), 'Ward volume', 'Unusually high', `${cur} lines last week; normally about ${Math.round(mu)}`]);
+      else if (mu >= 10 && cur < mu - 2 * Math.max(s, 1)) alerts.push([wardName(id), 'Ward volume', 'Unusually low', `${cur} lines last week; normally about ${Math.round(mu)}`]);
+    });
+    Object.entries(perDrug).forEach(([k, m]) => {
+      const [wid, drug] = k.split('|'); const hist = base.map(i => m[i] || 0), cur = m[0] || 0, mu = mean(hist);
+      if (cur >= 5 && cur >= 3 * Math.max(mu, 1)) alerts.push([wardName(wid), drug, 'Spike', `${cur} packs last week; normally about ${Math.round(mu * 10) / 10} a week`]);
+    });
+  }
+  return `<div class="card"><h2>Alerts</h2>
+    <p class="muted">Wards or items whose last full week (Monday ${lastWeek.toLocaleDateString("en-GB", { day: "numeric", month: "short" })} onwards) was far outside their usual pattern. Useful for spotting stock waste, a changed practice or an incident. It needs at least 4 earlier weeks of data, so choose 90 days or more above.</p>
+    ${ok ? table('alerts', ['Ward', 'What', 'Alert', 'Detail'], alerts, { file: 'alerts', empty: 'Nothing unusual last week.' }) : `<div class="empty">Not enough history yet. Pick a longer period above or check back once there are at least 5 weeks of orders.</div>`}</div>`;
+}
+
+// ---------- page ----------
+const TABS = () => [
+  { id: 'fill', label: 'Fill rate', heads: ['Fill rate and stock-outs'] },
+  { id: 'turn', label: 'Turnaround', heads: ['Turnaround by stage'] },
+  { id: 'cutoff', label: 'Cut-off', heads: ['Cut-off performance'] },
+  { id: 'appr', label: 'Approvals', heads: ['Above-max and restricted approvals'] },
+  { id: 'right', label: 'Right-sizing', heads: ['Stocklist right-sizing'] },
+  { id: 'dead', label: 'Dead stock', heads: ['Dead stock'] },
+  { id: 'subs', label: 'Substitutions', heads: ['Substitutions'] },
+  { id: 'temp', label: 'Temp stock', heads: ['Temp stock requests'] },
+  ...(isDeveloper() ? [{ id: 'staff', label: 'Staff', heads: ['Staff workload'] }] : []),
+  { id: 'league', label: 'Wards', heads: ['Ward league'] },
+  { id: 'alerts', label: 'Alerts', heads: ['Alerts'] },
+];
+let period = 90, siteSel = '';
+async function render() {
+  const body = document.getElementById('body');
+  const holder = document.getElementById('bi-ops');
+  holder.innerHTML = '<div class="card"><div class="empty">Loading…</div></div>';
+  try { D = await loadData(period, siteSel); } catch (e) { holder.innerHTML = `<div class="card"><div class="empty">${esc(e.message || String(e))}</div></div>`; return; }
+  Object.values(charts).forEach(c => c?.destroy()); charts = {};
+  holder.innerHTML = [secFill(), secTurn(), secCutoff(), secApprovals(), secRight(), secDead(), secSubs(), secTemp(), isDeveloper() ? secStaff() : '', secLeague(), secAlerts()].join('');
+  applySubtabs(holder, TABS(), (location.hash || '').replace('#tab=', '') || 'fill');
+  wireCsv(holder);
+  const rs = document.getElementById('rs-filter'); if (rs) rs.onchange = () => { rsFilter = rs.value; renderKeepTab(); };
+  const an = document.getElementById('staff-anon'); if (an) an.onchange = () => { anon = an.checked; renderKeepTab(); };
+  const lg = document.getElementById('lg-sort'); if (lg) lg.onchange = () => { leagueSort = lg.value; renderKeepTab(); };
+  holder.querySelectorAll('[data-emerg]').forEach(b => b.onclick = async () => {
+    const { error } = await sb.from('drug_catalog').update({ emergency_stock: true }).eq('medicine_name', b.dataset.emerg);
+    if (error) return toast(error.message, true);
+    toast('Marked as emergency stock — it will no longer appear here.');
+    renderKeepTab();
+  });
+}
+function currentTab() { return document.querySelector('.seg.subtabs button[aria-selected="true"], .subtabs button.on')?.dataset.st || 'fill'; }
+async function renderKeepTab() { const t = currentTab(); location.hash = 'tab=' + t; await render(); }
+
+async function renderPage() {
+  const sorted = [...sites].sort((a, b) => a.name.localeCompare(b.name));
+  document.getElementById('body').innerHTML = `
+    <div class="card">
+      <h2>Operations</h2>
+      <p class="muted">Practical measures of how stock moves through the system. Everything is worked out from the orders already recorded, within the period and site you choose.</p>
+      <div class="row">
+        <div><label>Period</label><select id="ops-period">${[30, 90, 180, 365].map(d => `<option value="${d}" ${d === period ? 'selected' : ''}>Last ${d} days</option>`).join('')}</select></div>
+        <div><label>Site</label><select id="ops-site"><option value="">All sites</option>${sorted.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></div>
+      </div>
+    </div>
+    <div id="bi-ops"></div>`;
+  document.getElementById('ops-period').onchange = (e) => { period = parseInt(e.target.value, 10); renderKeepTab(); };
+  document.getElementById('ops-site').onchange = (e) => { siteSel = e.target.value; renderKeepTab(); };
+  render();
+}
+
+(async () => {
+  const p = await requireAuth({ require: () => canViewBi() && biEnabled() });
+  if (!p) return;
+  document.getElementById('main').innerHTML = "<div id='body'></div>";
+  renderPage();
+})();
+</script>
+</body>
+</html>
