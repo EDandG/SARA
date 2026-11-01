@@ -270,6 +270,14 @@ async function openSectionPicker(sectionId, sectionName) {
 let catalogFiles = [];     // { id, name, rows, header, nameCol, packCol, sectionId }
 let catalogSections = [];
 let catFileSeq = 0;
+// The class a sheet will be filed under: an existing id, or 'new:<lowercased name>' for one to be created.
+function catSecKey(f) {
+  if (f.sectionId !== '__new') return f.sectionId || '';
+  const nm = (f.newName || '').replace(/\s+/g, ' ').trim();
+  if (!nm) return '';
+  const hit = catalogSections.find(x => x.name.trim().toLowerCase() === nm.toLowerCase());
+  return hit ? hit.id : 'new:' + nm.toLowerCase();
+}
 const catColLabel = (i, h) => String.fromCharCode(65 + (i % 26)) + (h ? ': ' + h : '');
 
 async function addCatalogFiles(fileList) {
@@ -283,15 +291,24 @@ async function addCatalogFiles(fileList) {
         .filter(r => r.some(c => String(c).trim() !== ''));
       if (!rows.length) { toast(`${file.name} is empty.`, true); continue; }
       const first = rows[0].map(c => String(c).trim());
-      const header = first.filter(c => c && isNaN(Number(c))).length >= Math.ceil(first.filter(Boolean).length / 2);
+      // A first row is a heading only if it reads like one. A sheet that is just a list of drug names
+      // (even one with a single column) has no heading, so its first drug is not thrown away.
+      const looksLikeHeading = (c) => /^(drug|drugs|medicine|medicines|medication|item|items|name|product|description|pack ?size|pack|size|form|strength|class)\b/i.test(c);
+      const header = first.some(looksLikeHeading);
       const find = re => first.findIndex(c => re.test(c));
-      // a sheet named like a class (e.g. "Injection.xlsx") pre-selects that class
-      const base = file.name.replace(/\.[^.]+$/, '').toLowerCase();
-      const guessSec = catalogSections.find(x => base.includes(x.name.toLowerCase()));
-      catalogFiles.push({ id: ++catFileSeq, name: file.name, rows, header,
-        nameCol: header ? find(/drug|medic|item|name|product|description/i) : 0,
+      const firstFilled = Math.max(0, first.findIndex(c => c !== ''));
+      // A sheet named like a class (e.g. "Injections.xlsx") pre-selects that class. Take the MOST SPECIFIC
+      // match, so "TTO Tablets and Capsules.xlsx" picks "TTO Tablets and Capsules", not "Tablets and Capsules".
+      const base = file.name.replace(/\.[^.]+$/, '').trim().toLowerCase();
+      const fits = catalogSections.filter(x => base.includes(x.name.trim().toLowerCase()));
+      const guessSec = fits.find(x => x.name.trim().toLowerCase() === base)
+        || fits.sort((a, b) => b.name.length - a.name.length)[0];
+      // No existing class fits: default to creating a new one named after the file (editable, or pick another).
+      const newName = file.name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
+      catalogFiles.push({ id: ++catFileSeq, name: file.name, rows, header, newName,
+        nameCol: header ? Math.max(find(/drug|medic|item|name|product|description/i), firstFilled === 0 ? 0 : firstFilled) : firstFilled,
         packCol: header ? find(/pack|size|form/i) : -1,
-        sectionId: guessSec ? guessSec.id : '' });
+        sectionId: guessSec ? guessSec.id : '__new' });
     } catch (e) { toast(`Could not read ${file.name}: ${e.message}`, true); }
   }
   renderCatalogFiles();
@@ -300,9 +317,9 @@ async function addCatalogFiles(fileList) {
 function renderCatalogFiles() {
   const out = document.getElementById('csv-preview');
   if (!catalogFiles.length) { out.innerHTML = ''; return; }
-  const secOpts = (sel) => `<option value="">— no class —</option>` + catalogSections.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+  const secOpts = (sel) => `<option value="">— no class —</option>` + catalogSections.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${esc(x.name)}</option>`).join('') + `<option value="__new" ${sel === '__new' ? 'selected' : ''}>＋ Create a new class…</option>`;
   out.innerHTML = `
-    ${catalogSections.length ? '' : '<p class="muted" style="margin-top:12px; color:var(--amber);">No classes exist yet. Create them under Classes above first, then drop the sheets again to tag them.</p>'}
+    <p class="muted" style="margin-top:12px;">Each sheet is filed under a class named after its file. Rename it, pick an existing class, or choose none.</p>
     ${catalogFiles.map(f => {
       const ncol = Math.max(...f.rows.map(r => r.length));
       const head = f.rows[0].map(c => String(c).trim());
@@ -312,7 +329,8 @@ function renderCatalogFiles() {
         <div style="display:flex; align-items:center; gap:8px;"><b style="flex:1;">${esc(f.name)}</b><span class="muted" style="font-size:12.5px;">${f.rows.length} row${f.rows.length === 1 ? '' : 's'}</span>
           <button class="btn small ghost" data-rmfile="${f.id}" title="Remove this sheet">${uiIcon('x', 13)}</button></div>
         <div class="row" style="margin-top:8px;">
-          <div><label>Class for this sheet</label><select data-k="sectionId">${secOpts(f.sectionId)}</select></div>
+          <div><label>Class for this sheet</label><select data-k="sectionId">${secOpts(f.sectionId)}</select>
+            ${f.sectionId === '__new' ? `<input type="text" data-k="newName" value="${esc(f.newName)}" maxlength="80" placeholder="New class name" style="margin-top:6px;" />` : ''}</div>
           <div><label>Drug name column</label><select data-k="nameCol">${opt(f.nameCol, true)}</select></div>
           <div><label>Pack size column <span class="muted" style="font-weight:400;">(optional)</span></label><select data-k="packCol">${opt(f.packCol, false)}</select></div>
         </div>
@@ -326,8 +344,8 @@ function renderCatalogFiles() {
     const f = catalogFiles.find(x => x.id === +card.dataset.f);
     card.querySelectorAll('[data-k]').forEach(el => el.onchange = () => {
       const k = el.dataset.k;
-      f[k] = k === 'header' ? el.checked : (k === 'sectionId' ? el.value : parseInt(el.value, 10));
-      renderCatalogPreview();
+      f[k] = k === 'header' ? el.checked : ((k === 'sectionId' || k === 'newName') ? el.value : parseInt(el.value, 10));
+      if (k === 'sectionId') renderCatalogFiles(); else renderCatalogPreview();
     });
     card.querySelector('[data-rmfile]').onclick = () => { catalogFiles = catalogFiles.filter(x => x.id !== f.id); renderCatalogFiles(); };
   });
@@ -339,6 +357,8 @@ async function renderCatalogPreview() {
   const out = document.getElementById('cat-prev');
   if (!out) return;
   const secName = Object.fromEntries(catalogSections.map(x => [x.id, x.name]));
+  const newClasses = new Map();   // 'new:<lower>' -> name, created on import
+  catalogFiles.forEach(f => { const k = catSecKey(f); if (k.startsWith('new:')) { const nm = f.newName.replace(/\s+/g, ' ').trim(); newClasses.set(k, nm); secName[k] = nm + ' (new class)'; } });
   // merge every sheet: one entry per drug, with the union of its classes
   const merged = new Map();
   let dupInFiles = 0, skippedNoCol = 0;
@@ -350,8 +370,8 @@ async function renderCatalogPreview() {
       const pack = f.packCol >= 0 ? String(row[f.packCol] ?? '').trim() : '';
       const key = name.toLowerCase();
       const e = merged.get(key);
-      if (e) { dupInFiles++; if (!e.pack_size && pack) e.pack_size = pack; if (f.sectionId) e.sections.add(f.sectionId); }
-      else merged.set(key, { medicine_name: name, pack_size: pack || null, sections: new Set(f.sectionId ? [f.sectionId] : []) });
+      if (e) { dupInFiles++; if (!e.pack_size && pack) e.pack_size = pack; if (catSecKey(f)) e.sections.add(catSecKey(f)); }
+      else merged.set(key, { medicine_name: name, pack_size: pack || null, sections: new Set(catSecKey(f) ? [catSecKey(f)] : []) });
     });
   }
   const items = [...merged.values()];
@@ -376,6 +396,15 @@ async function renderCatalogPreview() {
 
   document.getElementById('confirm-catalog-import').onclick = async () => {
     const btn = document.getElementById('confirm-catalog-import'); btn.disabled = true;
+    const usedNew = new Map([...newClasses].filter(([k]) => tagLinks.some(t => t.sectionId === k)));
+    const realId = new Map();   // 'new:<lower>' -> uuid
+    if (usedNew.size) {
+      const { error } = await sb.from('drug_sections').upsert([...usedNew.values()].map(name => ({ name, created_by: profile.id })), { onConflict: 'name', ignoreDuplicates: true });
+      if (error) { toast(error.message, true); btn.disabled = false; return; }
+      const { data: now } = await sb.from('drug_sections').select('id, name');
+      (now || []).forEach(s => { const k = 'new:' + s.name.trim().toLowerCase(); if (usedNew.has(k)) realId.set(k, s.id); });
+      if (realId.size !== usedNew.size) { toast('Could not create every new class. Nothing was imported.', true); btn.disabled = false; return; }
+    }
     if (newOnes.length) {
       const { error } = await sb.from('drug_catalog').insert(newOnes.map(i => ({ medicine_name: i.medicine_name, pack_size: i.pack_size, created_by: profile.id })));
       if (error) { toast(error.message, true); btn.disabled = false; return; }
@@ -384,7 +413,7 @@ async function renderCatalogPreview() {
     if (tagLinks.length) {
       const { data: all } = await sb.from('drug_catalog').select('id, medicine_name');
       const idBy = new Map((all || []).map(r => [r.medicine_name.trim().toLowerCase(), r.id]));
-      const rows = tagLinks.map(t => ({ drug_catalog_id: idBy.get(t.key), section_id: t.sectionId })).filter(r => r.drug_catalog_id);
+      const rows = tagLinks.map(t => ({ drug_catalog_id: idBy.get(t.key), section_id: realId.get(t.sectionId) || t.sectionId })).filter(r => r.drug_catalog_id);
       const { error } = await sb.from('drug_catalog_sections').upsert(rows, { onConflict: 'drug_catalog_id,section_id', ignoreDuplicates: true });
       if (error) { toast(error.message, true); btn.disabled = false; return; }
     }
@@ -435,7 +464,7 @@ async function loadCatalogList() {
       <td>${esc(d.medicine_name)}${d.restricted ? ' <span class="capsule" style="margin-left:4px;">Restricted</span>' : ''}${d.emergency_stock ? ' <span class="capsule" style="margin-left:4px;">Emergency stock</span>' : ''}${d.hidden ? ' <span class="muted" style="font-size:12px;">(hidden)</span>' : ''}</td>
       <td class="muted">${esc(d.pack_size || '\u2014')}</td>
       <td>${(tagsByDrug[d.id] || []).map(id => `<span class="capsule" style="margin-right:4px;">${esc(secName[id] || '')}</span>`).join('') || '<span class="muted">\u2014</span>'}</td>
-      <td style="text-align:right; white-space:nowrap;"><button class="btn small" data-hide="${d.id}" data-to="${d.hidden ? 'false' : 'true'}">${d.hidden ? 'Unhide' : 'Hide'}</button>${isDeveloper() ? ` <button class="btn small danger" data-delete="${d.id}" data-name="${esc(d.medicine_name)}">Remove</button>` : ''}</td>
+      <td style="text-align:right; white-space:nowrap;">${isDeveloper() ? `<button class="btn small" data-edit="${d.id}">Edit</button> ` : ''}<button class="btn small" data-hide="${d.id}" data-to="${d.hidden ? 'false' : 'true'}">${d.hidden ? 'Unhide' : 'Hide'}</button>${isDeveloper() ? ` <button class="btn small danger" data-delete="${d.id}" data-name="${esc(d.medicine_name)}">Remove</button>` : ''}</td>
     </tr>`).join('')}
   </tbody></table>${!shown.length ? '<div class="empty">No drugs match.</div>' : ''}`;
   const reload = () => { const cs = document.getElementById('cat-search'); const pos = cs.selectionStart; loadCatalogList().then(() => { const n = document.getElementById('cat-search'); n.focus(); n.setSelectionRange(pos, pos); }); };
@@ -481,6 +510,37 @@ async function loadCatalogList() {
   });
 
   if (isDeveloper()) {
+    el.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+      const d = data.find(x => x.id === b.dataset.edit); if (!d) return;
+      const mine = new Set(tagsByDrug[d.id] || []);
+      openModal(`<h3>Edit drug</h3>
+        <p class="muted" style="margin-top:0;">Changing the name or pack size updates it everywhere: every ward stocklist, every request and the history. The old values are kept in a log.</p>
+        <label for="ed-name">Name</label><input id="ed-name" value="${esc(d.medicine_name)}" maxlength="200" />
+        <label for="ed-pack" style="margin-top:10px;">Pack size</label><input id="ed-pack" value="${esc(d.pack_size || '')}" maxlength="100" placeholder="e.g. 28 tablets" />
+        <label style="margin-top:10px;">Class</label>
+        <div style="display:flex; flex-wrap:wrap; gap:6px 14px;">${(sections || []).map(x => `<label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" class="ed-class" value="${x.id}" style="width:auto;" ${mine.has(x.id) ? 'checked' : ''} />${esc(x.name)}</label>`).join('') || '<span class="muted">No classes set up yet.</span>'}</div>
+        <div style="display:flex; flex-wrap:wrap; gap:6px 18px; margin-top:10px;">
+          <label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ed-restricted" style="width:auto;" ${d.restricted ? 'checked' : ''} />Restricted</label>
+          <label style="display:flex; align-items:center; gap:6px; font-weight:400;"><input type="checkbox" id="ed-emerg" style="width:auto;" ${d.emergency_stock ? 'checked' : ''} />Emergency stock</label>
+        </div>
+        <div class="actions"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn magenta" id="ed-save">Save</button></div>`);
+      document.getElementById('ed-save').onclick = async () => {
+        const name = document.getElementById('ed-name').value.trim(), pack = document.getElementById('ed-pack').value.trim();
+        if (!name) return toast('Enter a drug name.', true);
+        const save = document.getElementById('ed-save'); save.disabled = true;
+        const { error: e1 } = await sb.rpc('edit_drug', { p_id: d.id, p_name: name, p_pack_size: pack });
+        if (e1) { toast(e1.message, true); save.disabled = false; return; }
+        const want = new Set([...document.querySelectorAll('.ed-class:checked')].map(c => c.value));
+        const add = [...want].filter(x => !mine.has(x)), drop = [...mine].filter(x => !want.has(x));
+        if (drop.length) { const { error } = await sb.from('drug_catalog_sections').delete().eq('drug_catalog_id', d.id).in('section_id', drop); if (error) { toast(error.message, true); save.disabled = false; return; } }
+        if (add.length) { const { error } = await sb.from('drug_catalog_sections').insert(add.map(sid => ({ drug_catalog_id: d.id, section_id: sid }))); if (error) { toast(error.message, true); save.disabled = false; return; } }
+        const flags = { restricted: document.getElementById('ed-restricted').checked, emergency_stock: document.getElementById('ed-emerg').checked };
+        const { error: e3 } = await sb.from('drug_catalog').update(flags).eq('id', d.id);
+        if (e3) { toast(e3.message, true); save.disabled = false; return; }
+        restrictedDrugs.delete(d.medicine_name); if (flags.restricted) restrictedDrugs.add(name);
+        closeModal(); toast('Saved. The change is live everywhere.'); loadCatalogList();
+      };
+    });
     el.querySelectorAll('[data-delete]').forEach(b => b.onclick = () => {
       confirmDialog('Remove from catalog?', `"${esc(b.dataset.name)}" will no longer appear as an option when building ward stocklists. Wards that already stock it are unaffected.`, 'Remove', async () => {
         const { error: e } = await sb.from('drug_catalog').delete().eq('id', b.dataset.delete);
