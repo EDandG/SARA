@@ -33,34 +33,107 @@
 <div id="toast-root"></div>
 
 <script src="vendor/supabase.js"></script>
+<style>
+.wp{position:relative;display:inline-block;margin:0 0 12px}
+.wp-panel{position:absolute;z-index:20;top:100%;left:0;margin-top:4px;width:min(340px,92vw);background:var(--card,#fff);border:1px solid var(--border,#d9dce3);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.15);padding:10px}
+.wp-panel[hidden]{display:none}
+.wp-panel input[type=search]{width:100%;box-sizing:border-box;height:42px;margin-bottom:6px}
+.wp-list{max-height:260px;overflow:auto;border-top:1px solid var(--border,#e6e8ee)}
+.wp-row{display:flex;align-items:center;gap:10px;padding:10px 6px;min-height:24px;cursor:pointer;border-bottom:1px solid rgba(0,0,0,.05)}
+.wp-row input{width:20px;height:20px;margin:0}
+.wp-all{border-bottom:1px solid var(--border,#e6e8ee)}
+.wp-foot{display:flex;justify-content:space-between;margin-top:8px}
+</style>
 <script src="shared.js"></script>
 <script>
+let selectedWardIds = null; // null until first render
+
 async function renderWardHistory() {
   const body = document.getElementById('body');
   if (!myWards.length) { body.innerHTML = `<div class="card"><div class="empty">No wards have been allocated to your login yet.</div></div>`; return; }
 
   const requestedWardId = new URLSearchParams(window.location.search).get('ward');
   const scoped = requestedWardId && myWards.some(w => w.id === requestedWardId);
-  const wardsInView = scoped ? myWards.filter(w => w.id === requestedWardId) : myWards;
-  const wardIds = wardsInView.map(w => w.id);
+  const picker = !scoped && myWards.length > 1;
   const historyDays = parseFloat(systemSettings.order_history_days) || 7;
-  const titleText = scoped ? `Order history \u2014 ${esc(wardsInView[0].name)} (last ${historyDays} day${historyDays > 1 ? 's' : ''})` : `All orders \u2014 ${esc(myWards.map(w => w.name).join(', '))} (last ${historyDays} day${historyDays > 1 ? 's' : ''})`;
+  const daysTxt = `last ${historyDays} day${historyDays > 1 ? 's' : ''}`;
+  if (selectedWardIds === null) selectedWardIds = new Set(scoped ? [requestedWardId] : myWards.map(w => w.id));
+  const backLink = scoped ? `<a href="order.html?ward=${encodeURIComponent(requestedWardId)}" class="btn ghost small" style="margin-bottom:10px; display:inline-block;">‹ Back to ward</a><br/>` : '';
 
-  const since = new Date(Date.now() - historyDays * 24 * 3600 * 1000).toISOString();
-  const { data: sessionsData, error } = await sb.from('order_sessions').select('*').in('ward_id', wardIds)
-    .gte('created_at', since).order('created_at', { ascending: false }).limit(50);
-  if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
-  const backLink = scoped ? `<a href="order.html?ward=${encodeURIComponent(requestedWardId)}" class="btn ghost small" style="margin-bottom:10px; display:inline-block;">\u2039 Back to ward</a><br/>` : '';
-  if (!sessionsData?.length) { body.innerHTML = `<div class="card">${backLink}<h2>${titleText}</h2><div class="empty">No orders yet. ${esc(nextTopupHint())}</div></div>`; return; }
+  body.innerHTML = `<div class="card">${backLink}<h2 id="oh-title"></h2>
+    ${picker ? `<div class="wp" id="wp">
+      <button type="button" class="btn ghost" id="wp-btn" aria-haspopup="true" aria-expanded="false"><span id="wp-label"></span> ▾</button>
+      <div class="wp-panel" id="wp-panel" hidden>
+        <input type="search" id="wp-search" placeholder="Search wards" aria-label="Search wards" autocomplete="off" />
+        <label class="wp-row wp-all"><input type="checkbox" id="wp-all" /> <b>All wards</b></label>
+        <div id="wp-list" class="wp-list"></div>
+        <div class="wp-foot"><button type="button" class="btn ghost small" id="wp-clear">Clear</button><button type="button" class="btn small" id="wp-done">Done</button></div>
+      </div></div>` : ''}
+    <div id="oh-results"></div></div>`;
 
-  const { data: lines } = await sb.from('orders').select('*').in('session_id', sessionsData.map(s => s.id));
-  const nameById = await fetchNameMap(lines || []);
-  body.innerHTML = `<div class="card">${backLink}<h2>${titleText}</h2>
-    ${sessionsData.map(s => {
-      const wardTag = wardsInView.length > 1 ? `<b>${esc(wardName(s.ward_id))}</b> \u00b7 ` : '';
+  const chosen = () => myWards.filter(w => selectedWardIds.has(w.id));
+  const labelText = () => {
+    const c = chosen();
+    if (c.length === myWards.length) return `All wards (${c.length})`;
+    if (!c.length) return 'No wards selected';
+    return c.length <= 2 ? c.map(w => w.name).join(', ') : `${c.length} of ${myWards.length} wards`;
+  };
+  const setTitle = () => {
+    const c = chosen();
+    document.getElementById('oh-title').innerHTML = scoped
+      ? `Order history — ${esc(c[0]?.name || '')} (${daysTxt})`
+      : `Order history — ${c.length === myWards.length ? 'all wards' : esc(c.map(w => w.name).join(', ') || 'no wards')} (${daysTxt})`;
+    const l = document.getElementById('wp-label'); if (l) l.textContent = labelText();
+  };
+
+  let loadSeq = 0;
+  async function loadResults() {
+    const seq = ++loadSeq;
+    const out = document.getElementById('oh-results');
+    const c = chosen();
+    setTitle();
+    if (!c.length) { out.innerHTML = `<div class="empty">Select at least one ward to see its orders.</div>`; return; }
+    out.innerHTML = `<div class="empty">Loading…</div>`;
+    const since = new Date(Date.now() - historyDays * 24 * 3600 * 1000).toISOString();
+    const { data: sessionsData, error } = await sb.from('order_sessions').select('*').in('ward_id', c.map(w => w.id))
+      .gte('created_at', since).order('created_at', { ascending: false }).limit(50);
+    if (seq !== loadSeq) return;
+    if (error) { out.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
+    if (!sessionsData?.length) { out.innerHTML = `<div class="empty">No orders yet. ${esc(nextTopupHint())}</div>`; return; }
+    const { data: lines } = await sb.from('orders').select('*').in('session_id', sessionsData.map(s => s.id));
+    const nameById = await fetchNameMap(lines || []);
+    if (seq !== loadSeq) return;
+    out.innerHTML = sessionsData.map(s => {
+      const wardTag = c.length > 1 ? `<b>${esc(wardName(s.ward_id))}</b> · ` : '';
       return renderSessionCard(s, lines || [], nameById).replace('<span>', `<span>${wardTag}`);
-    }).join('')}
-  </div>`;
+    }).join('');
+  }
+
+  if (picker) {
+    const panel = document.getElementById('wp-panel'), btn = document.getElementById('wp-btn');
+    const search = document.getElementById('wp-search'), list = document.getElementById('wp-list'), all = document.getElementById('wp-all');
+    const drawList = () => {
+      const q = search.value.trim().toLowerCase();
+      const shown = myWards.filter(w => !q || w.name.toLowerCase().includes(q));
+      list.innerHTML = shown.length ? shown.map(w => `<label class="wp-row"><input type="checkbox" data-w="${esc(w.id)}" ${selectedWardIds.has(w.id) ? 'checked' : ''}/> ${esc(w.name)}</label>`).join('') : `<div class="empty" style="padding:10px;">No wards match.</div>`;
+      all.checked = selectedWardIds.size === myWards.length;
+      all.indeterminate = selectedWardIds.size > 0 && selectedWardIds.size < myWards.length;
+    };
+    const openP = (o) => { panel.hidden = !o; btn.setAttribute('aria-expanded', String(o)); if (o) { drawList(); search.focus(); } };
+    btn.onclick = () => openP(panel.hidden);
+    document.getElementById('wp-done').onclick = () => openP(false);
+    document.getElementById('wp-clear').onclick = () => { selectedWardIds = new Set(); drawList(); loadResults(); };
+    search.oninput = drawList;
+    all.onchange = () => { selectedWardIds = all.checked ? new Set(myWards.map(w => w.id)) : new Set(); drawList(); loadResults(); };
+    list.onchange = (e) => {
+      const id = e.target.dataset.w; if (!id) return;
+      e.target.checked ? selectedWardIds.add(id) : selectedWardIds.delete(id);
+      drawList(); loadResults();
+    };
+    document.addEventListener('click', (e) => { if (!panel.hidden && !document.getElementById('wp').contains(e.target)) openP(false); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.hidden) { openP(false); btn.focus(); } });
+  }
+  loadResults();
 }
 
 (async () => {
