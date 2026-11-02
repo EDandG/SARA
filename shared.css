@@ -937,6 +937,8 @@ html[data-motion="off"] .sl-live i{ animation:none; }
 .dash-tile{ border-left:1px solid var(--border-soft); border-top:6px solid var(--navy); }
 .dash-tile.teal{ border-left-color:var(--border-soft); border-top-color:var(--teal); }
 .dash-tile.red{ border-left-color:var(--border-soft); border-top-color:var(--red); }
+.dash-tile.amber{ border-left-color:var(--border-soft); border-top-color:var(--amber); }
+.dash-tile.amber .dt-num{ color:var(--amber); }
 .dash-tile .dt-num{ font-size:44px; }
 
 html[data-density="compact"] .card{ padding:14px 16px; margin-bottom:12px; }

@@ -833,6 +833,14 @@ function openDashboardList(kind, d) {
       ${sent.map(w => `<tr><td><b>${esc(w.ward)}</b></td><td class="muted">${esc(w.site)}</td><td>${dashFmtTime(w.sent_at)}</td>
         <td style="text-align:right;"><button class="btn small ghost" data-dash-view="${w.session_id}">View request</button></td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">No ward has sent one yet.</div>';
+  } else if (kind === 'tofollow') {
+    const tf = d.tofollow || [];
+    title = 'Items to follow'; sub = 'Out of stock, or part supplied with the remainder still owed. Oldest first.';
+    bodyHtml = tf.length ? `<table><thead><tr><th>Ward</th><th>Drug</th><th>Still owed</th><th>Why</th><th>Since</th></tr></thead><tbody>
+      ${tf.map(r => `<tr><td><b>${esc(r.ward)}</b></td><td>${esc(r.medicine_name)}${packTag(r)}</td><td><b>${r.owed}</b></td>
+        <td><span class="badge ${r.status === 'out_of_stock' ? 'out_of_stock' : 'part_supplied'}">${r.status === 'out_of_stock' ? 'Out of stock' : 'Part supplied (' + r.supplied_qty + ' of ' + r.quantity + ')'}</span></td>
+        <td class="muted">${new Date(r.when).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">Nothing is waiting to follow.</div>';
   } else if (kind === 'adhoc') {
     title = 'Adhoc requests today'; sub = 'Sent since midnight, plus anything due today that was sent earlier (for example after last night\u2019s cut-off) or carried over.'; bodyHtml = reqRows(d.adhoc || []);
   } else {
@@ -846,12 +854,34 @@ function openDashboardList(kind, d) {
   document.querySelectorAll('[data-dash-view]').forEach(b => b.onclick = () => openRequestSummary(b.dataset.dashView));
 }
 
+// Lines still owed to a ward: out of stock, or part supplied where the remainder has not been supplied or resupplied yet.
+async function loadToFollow() {
+  try {
+    const since = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString();
+    const { data: rows } = await sb.from('orders').select('*').in('status', ['out_of_stock', 'part_supplied']).gte('created_at', since)
+      .order('created_at', { ascending: true }).limit(500);
+    const list = rows || [];
+    const partIds = list.filter(o => o.status === 'part_supplied').map(o => o.id);
+    const closed = new Set();
+    if (partIds.length) {
+      const { data: kids } = await sb.from('orders').select('parent_order_id,status').in('parent_order_id', partIds);
+      (kids || []).forEach(k => { if (['complete', 'superseded'].includes(k.status)) closed.add(k.parent_order_id); });
+    }
+    return list.filter(o => !closed.has(o.id)).map(o => ({
+      ...o, ward: wardName(o.ward_id),
+      owed: o.status === 'part_supplied' ? Math.max(0, o.quantity - (o.supplied_qty || 0)) : o.quantity,
+      when: o.processed_at || o.created_at,
+    })).filter(o => o.owed > 0);
+  } catch (e) { return []; }
+}
+
 async function renderDashboardPanel(mountEl) {
   if (!mountEl) return;
   if (dashboardTimer) { clearInterval(dashboardTimer); dashboardTimer = null; }
   async function refresh() {
     const { data: d, error } = await sb.rpc('dashboard_summary');
     if (error || !d) { mountEl.innerHTML = `<div class="card"><h2>Today</h2><div class="empty">${esc(error?.message || 'Dashboard unavailable.')}</div></div>`; return; }
+    d.tofollow = await loadToFollow();
     const expected = d.expected || [];
     const sentN = expected.filter(e => e.session_id).length;
     const yetN = expected.length - sentN;
@@ -863,6 +893,7 @@ async function renderDashboardPanel(mountEl) {
         ${tile('adhoc', (d.adhoc || []).length, 'Adhoc requests', 'Click to see them', 'navy')}
         ${tile('topup', (d.topup || []).length, 'Full top-up requests', 'Click to see them', 'navy')}
         ${tile('sent', sentN, 'Wards sent top-up request', `of ${expected.length} due ${esc(d.tomorrow)}`, 'teal')}
+        ${tile('tofollow', d.tofollow.length, 'Items to follow', d.tofollow.length ? 'Out of stock or part supplied' : 'Nothing owed', d.tofollow.length ? 'amber' : 'teal')}
         ${tile('yet', yetN, 'Wards yet to send', yetN ? 'Click to see which wards' : 'All sent', yetN ? 'red' : 'teal')}
       </div></div>`;
     mountEl.querySelectorAll('[data-dash]').forEach(b => b.onclick = () => openDashboardList(b.dataset.dash, d));
