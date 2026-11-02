@@ -808,8 +808,12 @@ function openDashboardList(kind, d) {
   const expected = d.expected || [];
   const sent = expected.filter(e => e.session_id);
   const yet = expected.filter(e => !e.session_id);
+  // 'new' = sent since midnight; 'due' = sent earlier but due today (e.g. after last night's cut-off); 'carried' = still waiting / carried over from an earlier day
+  const whyTag = (r) => r.why === 'due' ? `<span class="badge pending" title="Sent after yesterday\u2019s cut-off, so due today">Carried over \u00b7 sent ${new Date(r.created_at).toLocaleDateString('en-GB', { weekday: 'short' })} ${dashFmtTime(r.created_at)}</span>`
+    : r.why === 'carried' ? `<span class="badge pending" title="Not processed on its due day, or carried over as non-urgent">Carried over \u00b7 ${r.open_items ?? 0} open</span>` : '';
+  const sentCell = (r) => r.why === 'new' || !r.why ? dashFmtTime(r.created_at) : new Date(r.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' + dashFmtTime(r.created_at);
   const reqRows = (list) => list.length ? `<table><thead><tr><th>Ward</th><th>Site</th><th>Sent</th><th>Items</th><th></th></tr></thead><tbody>
-      ${list.map(r => `<tr><td><b>${esc(r.ward)}</b></td><td class="muted">${esc(r.site)}</td><td>${dashFmtTime(r.created_at)}</td><td>${r.items}</td>
+      ${list.map(r => `<tr><td><b>${esc(r.ward)}</b> ${whyTag(r)}</td><td class="muted">${esc(r.site)}</td><td>${sentCell(r)}</td><td>${r.items}</td>
         <td style="text-align:right;"><button class="btn small ghost" data-dash-view="${r.id}">View request</button></td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">None yet today.</div>';
   let title, sub, bodyHtml;
@@ -830,9 +834,9 @@ function openDashboardList(kind, d) {
         <td style="text-align:right;"><button class="btn small ghost" data-dash-view="${w.session_id}">View request</button></td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">No ward has sent one yet.</div>';
   } else if (kind === 'adhoc') {
-    title = 'Adhoc requests today'; sub = 'Since midnight.'; bodyHtml = reqRows(d.adhoc || []);
+    title = 'Adhoc requests today'; sub = 'Sent since midnight, plus anything due today that was sent earlier (for example after last night\u2019s cut-off) or carried over.'; bodyHtml = reqRows(d.adhoc || []);
   } else {
-    title = 'Top-up requests today'; sub = 'Since midnight.'; bodyHtml = reqRows(d.topup || []);
+    title = 'Top-up requests today'; sub = 'Sent since midnight, plus anything due today that was sent earlier or carried over.'; bodyHtml = reqRows(d.topup || []);
   }
   openModal(`<div id="proc-modal-body">
     <div class="proc-head"><div><h3>${title}</h3><p class="ph-sub">${sub}</p></div></div>
@@ -854,7 +858,7 @@ async function renderDashboardPanel(mountEl) {
     const tile = (kind, num, label, sub, cls) => `<button class="dash-tile ${cls || ''}" data-dash="${kind}">
         <div class="dt-num">${num}</div><div class="dt-label">${label}</div><div class="dt-sub">${sub}</div></button>`;
     mountEl.innerHTML = `<div class="card dash-card">
-      <h2>Today <span class="muted">${new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} \u00b7 since midnight \u00b7 updates automatically</span></h2>
+      <h2>Today <span class="muted">${new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} \u00b7 includes requests due today \u00b7 updates automatically</span></h2>
       <div class="dash-tiles">
         ${tile('adhoc', (d.adhoc || []).length, 'Adhoc requests', 'Click to see them', 'navy')}
         ${tile('topup', (d.topup || []).length, 'Full top-up requests', 'Click to see them', 'navy')}
@@ -1657,7 +1661,17 @@ async function loadDailySnapshotData() {
   const { data: orderRows } = await sb.from('orders').select('id, status, created_at, order_type, ward_id')
     .gte('created_at', lookback.toISOString());
 
-  const todaysCohort = (orderRows || []).filter(o => isoDate(targetProcessingDate(o.created_at)) === todayIso);
+  // Also today's work: lines a pharmacist carried over as non-urgent (due_date_override = today) and anything
+  // still unactioned from an earlier day. Merged by id so nothing is counted twice.
+  const [{ data: carriedRows }, { data: overdueRows }] = await Promise.all([
+    sb.from('orders').select('id, status, created_at, order_type, ward_id').eq('due_date_override', todayIso),
+    sb.from('orders').select('id, status, created_at, order_type, ward_id').in('status', ['pending', 'pending_approval']).lt('created_at', today.toISOString()),
+  ]);
+  const byId = new Map();
+  (orderRows || []).forEach(o => { if (isoDate(targetProcessingDate(o.created_at)) === todayIso) byId.set(o.id, o); });
+  (carriedRows || []).forEach(o => byId.set(o.id, o));
+  (overdueRows || []).forEach(o => { if (isoDate(targetProcessingDate(o.created_at)) <= todayIso) byId.set(o.id, o); });
+  const todaysCohort = [...byId.values()];
   const pending = todaysCohort.filter(o => !ACTIONED_STATUSES.includes(o.status));
   const actioned = todaysCohort.filter(o => ACTIONED_STATUSES.includes(o.status));
 
@@ -1726,7 +1740,15 @@ async function loadBulkPieData() {
   const lookback = new Date(today); lookback.setDate(lookback.getDate() - 3);
   const { data: orderRows } = await sb.from('orders').select('id, status, created_at')
     .gte('created_at', lookback.toISOString());
-  const todaysCohort = (orderRows || []).filter(o => isoDate(targetProcessingDate(o.created_at)) === todayIso);
+  const [{ data: carriedRows }, { data: overdueRows }] = await Promise.all([
+    sb.from('orders').select('id, status, created_at').eq('due_date_override', todayIso),
+    sb.from('orders').select('id, status, created_at').in('status', ['pending', 'pending_approval']).lt('created_at', today.toISOString()),
+  ]);
+  const byId = new Map();
+  (orderRows || []).forEach(o => { if (isoDate(targetProcessingDate(o.created_at)) === todayIso) byId.set(o.id, o); });
+  (carriedRows || []).forEach(o => byId.set(o.id, o));
+  (overdueRows || []).forEach(o => { if (isoDate(targetProcessingDate(o.created_at)) <= todayIso) byId.set(o.id, o); });
+  const todaysCohort = [...byId.values()];
   const toFollowOnly = ACTIONED_STATUSES.filter(s => !TOFOLLOW_STATUSES.includes(s));
   const pending = todaysCohort.filter(o => !ACTIONED_STATUSES.includes(o.status));
   const actioned = todaysCohort.filter(o => toFollowOnly.includes(o.status));

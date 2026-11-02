@@ -38,7 +38,7 @@
 async function renderPending() {
   const body = document.getElementById('body');
 
-  const { data: pendingLinesAll, error } = await sb.from('orders').select('id, session_id, ward_id, medicine_name, quantity, pack_size, created_at').eq('status', 'pending').order('created_at');
+  const { data: pendingLinesAll, error } = await sb.from('orders').select('id, session_id, ward_id, medicine_name, quantity, pack_size, created_at, due_date_override').eq('status', 'pending').order('created_at');
   if (error) { body.innerHTML = `<div class="empty">${esc(error.message)}</div>`; return; }
   const pendingLines = pendingLinesAll;
   const openSessionIds = [...new Set((pendingLines || []).map(l => l.session_id).filter(Boolean))];
@@ -56,6 +56,22 @@ async function renderPending() {
   const { data: allLines } = allLineSessionIds.length
     ? await sb.from('orders').select('*').in('session_id', allLineSessionIds)
     : { data: [] };
+
+  // Priority, so the work that is already late goes first:
+  //   0 = carried over (a line a pharmacist marked non-urgent yesterday, or anything still waiting from an earlier day)
+  //   1 = sent after yesterday's cut-off, so it is due today
+  //   2 = everything else
+  const todayIsoQ = isoDate(dateOnly(new Date()));
+  const lineTier = (l) => {
+    const target = isoDate(targetProcessingDate(l.created_at));
+    if (l.due_date_override === todayIsoQ || target < todayIsoQ) return 0;
+    if (target === todayIsoQ && isoDate(dateOnly(new Date(l.created_at))) < todayIsoQ) return 1;
+    return 2;
+  };
+  const sessionTier = (s) => Math.min(2, ...(allLines || []).filter(o => o.session_id === s.id && o.status === 'pending').map(lineTier));
+  const tierTag = (n) => n === 0 ? '<span class="badge pending_approval" title="Not processed on its due day, or carried over as non-urgent">Carried over</span>'
+    : n === 1 ? '<span class="badge pending_approval" title="Sent after yesterday\u2019s cut-off, so due today">Carried over</span>' : '';
+  if (sessionsData) sessionsData.sort((a, b) => sessionTier(a) - sessionTier(b) || new Date(a.created_at) - new Date(b.created_at));
 
   const nameIds = [...(sessionsData || []).map(s => s.submitted_by), ...(sessionsData || []).map(s => s.picking_claimed_by),
     ...(awaitingCheckData || []).map(s => s.picking_confirmed_by)].filter(Boolean);
@@ -86,8 +102,9 @@ async function renderPending() {
         const lines = (allLines || []).filter(o => o.session_id === s.id);
         const pendingCount = lines.filter(o => o.status === 'pending').length;
         const oldestPending = lines.filter(o => o.status === 'pending').sort((a, b) => new Date(a.created_at) - new Date(b.created_at))[0];
-        return `<tr class="${justArrived.has(s.id) ? 'row-flash' : ''}">
-          <td><span class="ward-cell">${esc(wardName(s.ward_id))}</span><span class="type-pill ${s.order_type === 'topup' ? 'topup' : 'adhoc'}">${s.order_type === 'topup' ? 'Top-up' : 'Adhoc'}</span></td>
+        const tier = sessionTier(s);
+        return `<tr class="${justArrived.has(s.id) ? 'row-flash' : ''}" ${tier < 2 ? 'style="background:var(--amber-pale);"' : ''}>
+          <td><span class="ward-cell">${esc(wardName(s.ward_id))}</span><span class="type-pill ${s.order_type === 'topup' ? 'topup' : 'adhoc'}">${s.order_type === 'topup' ? 'Top-up' : 'Adhoc'}</span> ${tierTag(tier)}</td>
           <td>${esc(nameById[s.submitted_by] || '\u2014')}</td>
           <td class="muted">${fmtDate(s.created_at)}</td>
           <td>${lines.length}</td>
@@ -138,13 +155,13 @@ async function renderPending() {
   const dueRows = (list, showLate) => {
     if (!list.length) return `<div class="empty">Nothing here.</div>`;
     const byWard = {};
-    list.forEach(l => { (byWard[l.ward_id] = byWard[l.ward_id] || []).push(l); });
+    list.slice().sort((a, b) => lineTier(a) - lineTier(b) || new Date(a.created_at) - new Date(b.created_at)).forEach(l => { (byWard[l.ward_id] = byWard[l.ward_id] || []).push(l); });
     return `<table><thead><tr><th>Ward</th><th>Medicine</th><th>Qty</th><th>Submitted</th><th></th></tr></thead><tbody>` +
-      Object.entries(byWard).sort((a, b) => wardName(a[0]).localeCompare(wardName(b[0]))).map(([wid, ls]) =>
+      Object.entries(byWard).sort((a, b) => Math.min(...a[1].map(lineTier)) - Math.min(...b[1].map(lineTier)) || wardName(a[0]).localeCompare(wardName(b[0]))).map(([wid, ls]) =>
         ls.map((l, i) => `<tr>
           <td>${i === 0 ? `<b>${esc(wardName(wid))}</b>` : ''}</td>
           <td>${esc(l.medicine_name)}${packTag(l)}</td><td>${l.quantity}</td>
-          <td class="muted">${fmtDate(l.created_at)}${showLate ? ' <span class="badge pending_approval">After cut-off</span>' : ''}</td>
+          <td class="muted">${fmtDate(l.created_at)}${showLate ? ' <span class="badge pending_approval">After cut-off</span>' : (lineTier(l) < 2 ? ' ' + tierTag(lineTier(l)) : '')}</td>
           <td style="text-align:right;">${l.session_id ? `<button class="btn small ghost" data-view="${l.session_id}">Open</button>` : ''}</td></tr>`).join('')).join('') +
       `</tbody></table>`;
   };
