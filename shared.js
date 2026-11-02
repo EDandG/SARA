@@ -804,6 +804,8 @@ let dashboardTimer = null;
 
 function dashFmtTime(iso) { return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); }
 
+const isProcessedReq = (r) => (r.items ?? 0) > 0 && (r.open_items ?? 0) === 0;
+
 function openDashboardList(kind, d) {
   const expected = d.expected || [];
   const sent = expected.filter(e => e.session_id);
@@ -841,10 +843,17 @@ function openDashboardList(kind, d) {
         <td><span class="badge ${r.status === 'out_of_stock' ? 'out_of_stock' : 'part_supplied'}">${r.status === 'out_of_stock' ? 'Out of stock' : 'Part supplied (' + r.supplied_qty + ' of ' + r.quantity + ')'}</span></td>
         <td class="muted">${new Date(r.when).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</td></tr>`).join('')}
     </tbody></table>` : '<div class="empty">Nothing is waiting to follow.</div>';
+  } else if (kind === 'done') {
+    const done = [...(d.adhoc || []), ...(d.topup || [])].filter(isProcessedReq).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    title = 'Processed today'; sub = 'Adhoc and top-up requests where pharmacy has dealt with every line.';
+    bodyHtml = done.length ? `<table><thead><tr><th>Ward</th><th>Site</th><th>Type</th><th>Sent</th><th>Items</th><th></th></tr></thead><tbody>
+      ${done.map(r => `<tr><td><b>${esc(r.ward)}</b></td><td class="muted">${esc(r.site)}</td><td>${(d.topup || []).some(t => t.id === r.id) ? 'Top-up' : 'Adhoc'}</td><td>${sentCell(r)}</td><td>${r.items}</td>
+        <td style="text-align:right;"><button class="btn small ghost" data-dash-view="${r.id}">View request</button></td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty">Nothing processed yet today.</div>';
   } else if (kind === 'adhoc') {
-    title = 'Adhoc requests today'; sub = 'Sent since midnight, plus anything due today that was sent earlier (for example after last night\u2019s cut-off) or carried over.'; bodyHtml = reqRows(d.adhoc || []);
+    title = 'Adhoc requests waiting'; sub = 'Not yet processed by pharmacy: sent since midnight, due today, or carried over. Processed requests move to Processed today.'; bodyHtml = reqRows((d.adhoc || []).filter(r => !isProcessedReq(r)));
   } else {
-    title = 'Top-up requests today'; sub = 'Sent since midnight, plus anything due today that was sent earlier or carried over.'; bodyHtml = reqRows(d.topup || []);
+    title = 'Top-up requests waiting'; sub = 'Not yet processed by pharmacy: sent since midnight, due today, or carried over. Processed requests move to Processed today.'; bodyHtml = reqRows((d.topup || []).filter(r => !isProcessedReq(r)));
   }
   openModal(`<div id="proc-modal-body">
     <div class="proc-head"><div><h3>${title}</h3><p class="ph-sub">${sub}</p></div></div>
@@ -890,8 +899,9 @@ async function renderDashboardPanel(mountEl) {
     mountEl.innerHTML = `<div class="card dash-card">
       <h2>Today <span class="muted">${new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })} \u00b7 includes requests due today \u00b7 updates automatically</span></h2>
       <div class="dash-tiles">
-        ${tile('adhoc', (d.adhoc || []).length, 'Adhoc requests', 'Click to see them', 'navy')}
-        ${tile('topup', (d.topup || []).length, 'Full top-up requests', 'Click to see them', 'navy')}
+        ${tile('adhoc', (d.adhoc || []).filter(r => !isProcessedReq(r)).length, 'Adhoc requests', 'Waiting for pharmacy', 'navy')}
+        ${tile('topup', (d.topup || []).filter(r => !isProcessedReq(r)).length, 'Full top-up requests', 'Waiting for pharmacy', 'navy')}
+        ${tile('done', [...(d.adhoc || []), ...(d.topup || [])].filter(isProcessedReq).length, 'Processed today', 'Click to see them', 'teal')}
         ${tile('sent', sentN, 'Wards sent top-up request', `of ${expected.length} due ${esc(d.tomorrow)}`, 'teal')}
         ${tile('tofollow', d.tofollow.length, 'Items to follow', d.tofollow.length ? 'Out of stock or part supplied' : 'Nothing owed', d.tofollow.length ? 'amber' : 'teal')}
         ${tile('yet', yetN, 'Wards yet to send', yetN ? 'Click to see which wards' : 'All sent', yetN ? 'red' : 'teal')}
